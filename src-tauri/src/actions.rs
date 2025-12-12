@@ -208,7 +208,6 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
                 .unwrap_or("Proceed with this action?");
             println!("Confirmation requested: {}", message);
         }
-        }
         
         _ => {
             return Err(ActionError::InvalidAction(format!("Unknown action: {}", action.action)));
