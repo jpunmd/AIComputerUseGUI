@@ -3,7 +3,9 @@ node_modules
 
 # Build outputs
 dist
-src-tauri/target/*
+src-tauri/target
+src-tauri/target/debug
+src-tauri/target/release
 
 # Tauri auto-generated files
 src-tauri/gen/*
