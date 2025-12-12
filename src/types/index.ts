@@ -42,6 +42,7 @@ export interface Message {
   timestamp: Date;
   screenshot?: string;
   action?: ActionResult;
+  stepNumber?: number; // For multi-turn, which step this is
 }
 
 export interface AppState {

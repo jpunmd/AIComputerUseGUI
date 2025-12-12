@@ -83,6 +83,7 @@ export function ScreenshotViewer({
               style={{ transform: `scale(${zoom})`, transformOrigin: 'center' }}
             >
               <img
+                key={screenshot.slice(-100)} // Force re-render when screenshot changes
                 src={`data:image/png;base64,${screenshot}`}
                 alt="Screen capture"
                 className="max-w-full max-h-full object-contain"

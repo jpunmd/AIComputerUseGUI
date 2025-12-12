@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Settings, AgentResponse, Message } from '../types';
 
 const MAX_TURNS = 20; // Maximum number of turns to prevent infinite loops
-const ACTION_DELAY_MS = 1000; // Delay between action and next screenshot
+const ACTION_DELAY_MS = 1500; // Delay between action and next screenshot (increased for UI to update)
 
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -50,7 +50,8 @@ export function useAgent() {
     screenshot: string,
     screenWidth: number,
     screenHeight: number,
-    isFollowUp: boolean = false
+    isFollowUp: boolean = false,
+    stepNumber?: number
   ): Promise<AgentResponse | null> => {
     try {
       // Add user message only for initial query
@@ -77,14 +78,15 @@ export function useAgent() {
         verbosity: settings.verbosity,
       });
 
-      // Add assistant message
-      const thinkingPrefix = response.thinking ? `${response.thinking}\n\n` : '';
+      // Add assistant message - include screenshot so user can see what model saw
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: thinkingPrefix + response.output_text,
+        content: response.output_text,
         timestamp: new Date(),
         action: response.action,
+        screenshot, // Always include screenshot so user can see what model analyzed
+        stepNumber, // Track which step this is in multi-turn
       };
       setMessages(prev => [...prev, assistantMessage]);
 
@@ -161,6 +163,7 @@ export function useAgent() {
       let turn = 0;
       let currentQuery = query;
       let isFollowUp = false;
+      let lastAction: string | null = null;
 
       while (turn < MAX_TURNS && !stopRequestedRef.current) {
         setCurrentTurn(turn + 1);
@@ -171,9 +174,9 @@ export function useAgent() {
           throw new Error('Failed to capture screenshot');
         }
 
-        // Build the query for follow-up turns - be direct to avoid repetition
-        if (isFollowUp) {
-          currentQuery = `Goal: "${query}". This is the screen AFTER your last action. If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
+        // Build the query for follow-up turns - include what action was just taken
+        if (isFollowUp && lastAction) {
+          currentQuery = `Goal: "${query}". I just performed: ${lastAction}. This screenshot shows the CURRENT state. Check if the goal is achieved - if yes, use "done". If not, what's the NEXT action?`;
         }
 
         // Process single turn
@@ -183,7 +186,8 @@ export function useAgent() {
           screenshot, 
           screenWidth, 
           screenHeight, 
-          isFollowUp
+          isFollowUp,
+          turn + 1 // Step number for display
         );
 
         if (!response?.success) {
@@ -202,11 +206,27 @@ export function useAgent() {
           break;
         }
 
+        // Format the action for context in next turn
+        const action = response.action;
+        let actionDescription = action.action;
+        if (action.arguments?.coordinate) {
+          actionDescription += ` at (${action.arguments.coordinate[0]}, ${action.arguments.coordinate[1]})`;
+        }
+        if (action.arguments?.text) {
+          actionDescription += ` "${action.arguments.text}"`;
+        }
+        if (action.arguments?.key) {
+          actionDescription += ` key:${action.arguments.key}`;
+        }
+
         // Execute the action
         const success = await executeAction(response.action);
         if (!success) {
           throw new Error('Failed to execute action');
         }
+
+        // Store for next iteration context
+        lastAction = actionDescription;
 
         // Wait for UI to update after action
         await delay(ACTION_DELAY_MS);

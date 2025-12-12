@@ -34,11 +34,11 @@ For each action, return JSON in <tool_call></tool_call> tags:
 fn get_verbosity_instructions(verbosity: &str) -> &'static str {
     match verbosity {
         "concise" => r#"
-IMPORTANT: Be extremely concise. Output ONLY the tool_call with no explanation before or after. Do not describe what you see or what you're doing. Just output the action."#,
+IMPORTANT: Be extremely concise. Output ONLY the tool_call with no explanation. When the task is complete, you MUST still output a tool_call with action "done"."#,
         "verbose" => r#"
-Explain your reasoning in detail before each action. Describe what you observe in the screenshot and why you're taking this specific action."#,
+Explain your reasoning before each action. You MUST always output a tool_call. When the task is complete, output a tool_call with action "done"."#,
         _ => r#"
-Be brief. One short sentence about what you're doing, then the action."#,
+Be brief. You MUST always output a tool_call. When the task is complete, output a tool_call with action "done"."#,
     }
 }
 
@@ -67,7 +67,16 @@ pub async fn call_computer_use_api(
     max_tokens: u32,
     verbosity: &str,
 ) -> Result<AgentResponse, ApiError> {
+    println!("=== API Call Debug ===");
+    println!("Verbosity: {}", verbosity);
+    println!("Query: {}", query);
+    println!("Screenshot length: {} bytes", screenshot_base64.len());
+    println!("Screen size: {}x{}", display_width, display_height);
+    
     let client = Client::new();
+    
+    let system_prompt = build_system_prompt(verbosity);
+    println!("System prompt: {}", system_prompt);
     
     // Build the chat request
     let request = ChatRequest {
@@ -76,7 +85,7 @@ pub async fn call_computer_use_api(
             ChatMessage {
                 role: "system".to_string(),
                 content: vec![ContentPart::Text {
-                    text: build_system_prompt(verbosity),
+                    text: system_prompt,
                 }],
             },
             ChatMessage {
@@ -199,6 +208,30 @@ fn parse_tool_call(response: &str) -> Result<ActionResult, ApiError> {
     // Another fallback: try to parse as ActionResult directly
     if let Ok(action) = serde_json::from_str::<ActionResult>(response) {
         return Ok(action);
+    }
+    
+    // Final fallback: if the response indicates the task is complete, treat as "done"
+    let response_lower = response.to_lowercase();
+    if response_lower.contains("already open") 
+        || response_lower.contains("task is complete") 
+        || response_lower.contains("no further action")
+        || response_lower.contains("goal is achieved")
+        || response_lower.contains("successfully completed")
+        || response_lower.contains("has been completed")
+        || response_lower.contains("is now open")
+    {
+        return Ok(ActionResult {
+            action: "done".to_string(),
+            arguments: crate::types::ActionResultArguments {
+                coordinate: None,
+                text: None,
+                key: None,
+                start_coordinate: None,
+                end_coordinate: None,
+                direction: None,
+                amount: None,
+            },
+        });
     }
     
     Err(ApiError::ParseError(

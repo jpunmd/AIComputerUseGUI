@@ -55,10 +55,24 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
     return description;
   };
 
-  // Clean up the content - remove tool_call XML tags for display
+  // Clean up the content - remove tool_call XML tags but keep thinking
   const cleanContent = (content: string) => {
+    // Extract text before <tool_call> as the model's thinking
+    const toolCallIndex = content.indexOf('<tool_call>');
+    let thinking = '';
+    
+    if (toolCallIndex > 0) {
+      thinking = content.substring(0, toolCallIndex).trim();
+    }
+    
     // Remove <tool_call>...</tool_call> blocks
     let cleaned = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+    
+    // If we have thinking, use that
+    if (thinking) {
+      return thinking;
+    }
+    
     // If nothing left after cleaning, show a friendly message
     if (!cleaned) {
       return 'Action detected';
@@ -110,6 +124,14 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
                   message.role === 'user' ? 'text-right' : ''
                 }`}
               >
+                {/* Step number badge for multi-turn */}
+                {message.stepNumber && (
+                  <div className="mb-1">
+                    <span className="text-xs px-2 py-0.5 bg-primary-500/20 text-primary-400 rounded-full">
+                      Step {message.stepNumber}
+                    </span>
+                  </div>
+                )}
                 <div
                   className={`inline-block px-4 py-2 rounded-2xl ${
                     message.role === 'user'
