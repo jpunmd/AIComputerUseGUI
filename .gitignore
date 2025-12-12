@@ -1,1 +1,12 @@
+# Dependencies
 node_modules
+
+# Build outputs
+dist
+src-tauri/target
+
+# Tauri auto-generated files
+src-tauri/gen
+
+# Logs
+*.log
