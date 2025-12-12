@@ -66,6 +66,15 @@ export interface ChatSession {
   initialQuery?: string;
 }
 
+// Screenshot with metadata from the backend
+export interface ScreenshotWithMetadata {
+  base64_image: string;
+  image_width: number;
+  image_height: number;
+  actual_screen_width: number;
+  actual_screen_height: number;
+}
+
 export interface AppState {
   isConnected: boolean;
   isProcessing: boolean;

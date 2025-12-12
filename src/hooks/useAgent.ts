@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Settings, AgentResponse, Message } from '../types';
+import { Settings, AgentResponse, Message, ScreenshotWithMetadata } from '../types';
 
 const MAX_TURNS = 20; // Maximum number of turns to prevent infinite loops
 const ACTION_DELAY_MS = 1500; // Delay between action and next screenshot (increased for UI to update)
@@ -10,6 +10,15 @@ export interface ConfirmationRequest {
   message: string;
   onConfirm: () => void;
   onDeny: () => void;
+}
+
+// Screenshot capture result with dimensions
+interface ScreenshotCapture {
+  base64: string;
+  imageWidth: number;
+  imageHeight: number;
+  screenWidth: number;
+  screenHeight: number;
 }
 
 export function useAgent() {
@@ -24,13 +33,25 @@ export function useAgent() {
   const confirmationResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
   const screenshotHistoryRef = useRef<string[]>([]); // Track screenshots for current task
 
-  const getScreenSize = useCallback(async (): Promise<[number, number]> => {
+  // Capture screenshot with metadata (dimensions)
+  const captureScreenshotWithMetadata = useCallback(async (): Promise<ScreenshotCapture | null> => {
     try {
-      const size = await invoke<[number, number]>('get_screen_size');
-      return size;
-    } catch {
-      // Fallback to window dimensions
-      return [window.screen.width, window.screen.height];
+      const result = await invoke<ScreenshotWithMetadata>('capture_screenshot_with_metadata');
+      // Use flushSync to ensure the screenshot is rendered immediately
+      flushSync(() => {
+        setCurrentScreenshot(result.base64_image);
+      });
+      return {
+        base64: result.base64_image,
+        imageWidth: result.image_width,
+        imageHeight: result.image_height,
+        screenWidth: result.actual_screen_width,
+        screenHeight: result.actual_screen_height,
+      };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(`Failed to capture screenshot: ${errorMessage}`);
+      return null;
     }
   }, []);
 
@@ -53,12 +74,14 @@ export function useAgent() {
   const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
   // Single turn processing - returns the response without executing
+  // imageWidth/imageHeight = dimensions of the image the model sees
+  // These should be passed to the API so the model's coordinate system matches the image
   const processSingleTurn = useCallback(async (
     query: string,
     settings: Settings,
     screenshot: string,
-    screenWidth: number,
-    screenHeight: number,
+    imageWidth: number,
+    imageHeight: number,
     isFollowUp: boolean = false,
     stepNumber?: number,
     screenshotHistory?: string[]
@@ -77,13 +100,14 @@ export function useAgent() {
       }
 
       // Send to backend with screenshot history for context
+      // Pass IMAGE dimensions (not screen dimensions) so model's coordinate system matches
       const response = await invoke<AgentResponse>('process_computer_use', {
         screenshotBase64: screenshot,
         query,
         apiEndpoint: settings.apiEndpoint,
         modelId: settings.modelId,
-        displayWidth: screenWidth,
-        displayHeight: screenHeight,
+        displayWidth: imageWidth,
+        displayHeight: imageHeight,
         maxTokens: settings.maxTokens,
         verbosity: settings.verbosity,
         screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
@@ -117,13 +141,13 @@ export function useAgent() {
     setError(null);
 
     try {
-      const [screenWidth, screenHeight] = await getScreenSize();
-      const screenshot = await captureScreenshot();
-      if (!screenshot) {
+      const capture = await captureScreenshotWithMetadata();
+      if (!capture) {
         throw new Error('Failed to capture screenshot');
       }
 
-      return await processSingleTurn(query, settings, screenshot, screenWidth, screenHeight);
+      // Pass image dimensions so model's coordinate system matches the image
+      return await processSingleTurn(query, settings, capture.base64, capture.imageWidth, capture.imageHeight);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(errorMessage);
@@ -140,7 +164,7 @@ export function useAgent() {
     } finally {
       setIsProcessing(false);
     }
-  }, [captureScreenshot, getScreenSize, processSingleTurn]);
+  }, [captureScreenshotWithMetadata, processSingleTurn]);
 
   // Execute action
   const executeAction = useCallback(async (action: AgentResponse['action']): Promise<boolean> => {
@@ -171,7 +195,6 @@ export function useAgent() {
     screenshotHistoryRef.current = []; // Clear screenshot history for new task
 
     try {
-      const [screenWidth, screenHeight] = await getScreenSize();
       let turn = 0;
       let currentQuery = query;
       let isFollowUp = false;
@@ -180,9 +203,9 @@ export function useAgent() {
       while (turn < MAX_TURNS && !stopRequestedRef.current) {
         setCurrentTurn(turn + 1);
 
-        // Capture fresh screenshot
-        const screenshot = await captureScreenshot();
-        if (!screenshot) {
+        // Capture fresh screenshot with metadata (includes image dimensions)
+        const capture = await captureScreenshotWithMetadata();
+        if (!capture) {
           throw new Error('Failed to capture screenshot');
         }
 
@@ -199,19 +222,20 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
         }
 
         // Process single turn with screenshot history for context
+        // Pass IMAGE dimensions so model's coordinates match the image it sees
         const response = await processSingleTurn(
           currentQuery, 
           settings, 
-          screenshot, 
-          screenWidth, 
-          screenHeight, 
+          capture.base64, 
+          capture.imageWidth, 
+          capture.imageHeight, 
           isFollowUp,
           turn + 1, // Step number for display
           screenshotHistoryRef.current // Pass screenshot history for context
         );
         
         // Add current screenshot to history for next turn
-        screenshotHistoryRef.current.push(screenshot);
+        screenshotHistoryRef.current.push(capture.base64);
 
         if (!response?.success) {
           throw new Error(response?.error || 'Failed to get response');
@@ -353,7 +377,7 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
       setIsMultiTurnRunning(false);
       setCurrentTurn(0);
     }
-  }, [captureScreenshot, executeAction, getScreenSize, processSingleTurn]);
+  }, [captureScreenshotWithMetadata, executeAction, processSingleTurn]);
 
   // Stop multi-turn execution
   const stopMultiTurn = useCallback(() => {

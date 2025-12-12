@@ -18,23 +18,30 @@ pub enum ScreenshotError {
     EncodeError(String),
 }
 
-/// Resize an image to fit within MAX_SCREENSHOT_DIMENSION while maintaining aspect ratio
-fn resize_image(img: RgbaImage) -> RgbaImage {
-    let (width, height) = (img.width(), img.height());
-    
-    // Check if resizing is needed
+/// Calculate the resized dimensions for a given image size
+fn calculate_resized_dimensions(width: u32, height: u32) -> (u32, u32) {
     if width <= MAX_SCREENSHOT_DIMENSION && height <= MAX_SCREENSHOT_DIMENSION {
-        return img;
+        return (width, height);
     }
     
-    // Calculate new dimensions maintaining aspect ratio
-    let (new_width, new_height) = if width > height {
+    if width > height {
         let ratio = MAX_SCREENSHOT_DIMENSION as f64 / width as f64;
         (MAX_SCREENSHOT_DIMENSION, (height as f64 * ratio) as u32)
     } else {
         let ratio = MAX_SCREENSHOT_DIMENSION as f64 / height as f64;
         ((width as f64 * ratio) as u32, MAX_SCREENSHOT_DIMENSION)
-    };
+    }
+}
+
+/// Resize an image to fit within MAX_SCREENSHOT_DIMENSION while maintaining aspect ratio
+fn resize_image(img: RgbaImage) -> RgbaImage {
+    let (width, height) = (img.width(), img.height());
+    let (new_width, new_height) = calculate_resized_dimensions(width, height);
+    
+    // Check if resizing is needed
+    if new_width == width && new_height == height {
+        return img;
+    }
     
     println!("Resizing screenshot from {}x{} to {}x{}", width, height, new_width, new_height);
     
@@ -42,13 +49,26 @@ fn resize_image(img: RgbaImage) -> RgbaImage {
     image::imageops::resize(&img, new_width, new_height, FilterType::Lanczos3)
 }
 
-/// Capture a screenshot of the primary screen and return it as a base64-encoded PNG
-pub fn capture_screen() -> Result<String, ScreenshotError> {
+/// Screenshot result containing the base64 image and dimensions
+#[derive(Debug, Clone)]
+pub struct ScreenshotResult {
+    pub base64_image: String,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub actual_screen_width: u32,
+    pub actual_screen_height: u32,
+}
+
+/// Capture a screenshot of the primary screen and return it with metadata
+pub fn capture_screen_with_metadata() -> Result<ScreenshotResult, ScreenshotError> {
     // Get all screens
     let screens = Screen::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
     
     // Get the primary screen (first one)
     let screen = screens.first().ok_or(ScreenshotError::NoScreens)?;
+    
+    let actual_width = screen.display_info.width;
+    let actual_height = screen.display_info.height;
     
     // Capture the screenshot
     let image = screen
@@ -61,6 +81,8 @@ pub fn capture_screen() -> Result<String, ScreenshotError> {
     
     // Resize the image to reduce token usage
     let resized = resize_image(rgba_image);
+    let image_width = resized.width();
+    let image_height = resized.height();
     
     // Convert to PNG bytes
     let mut buffer = Vec::new();
@@ -68,8 +90,8 @@ pub fn capture_screen() -> Result<String, ScreenshotError> {
     encoder
         .write_image(
             resized.as_raw(),
-            resized.width(),
-            resized.height(),
+            image_width,
+            image_height,
             image::ExtendedColorType::Rgba8,
         )
         .map_err(|e| ScreenshotError::EncodeError(e.to_string()))?;
@@ -77,9 +99,22 @@ pub fn capture_screen() -> Result<String, ScreenshotError> {
     // Encode as base64
     let base64_image = STANDARD.encode(&buffer);
     
-    println!("Screenshot captured and compressed: {} bytes base64", base64_image.len());
+    println!("Screenshot captured: {}x{} (actual: {}x{}), {} bytes base64", 
+        image_width, image_height, actual_width, actual_height, base64_image.len());
     
-    Ok(base64_image)
+    Ok(ScreenshotResult {
+        base64_image,
+        image_width,
+        image_height,
+        actual_screen_width: actual_width,
+        actual_screen_height: actual_height,
+    })
+}
+
+/// Capture a screenshot of the primary screen and return it as a base64-encoded PNG
+/// (Legacy function for compatibility)
+pub fn capture_screen() -> Result<String, ScreenshotError> {
+    capture_screen_with_metadata().map(|r| r.base64_image)
 }
 
 /// Get screen dimensions (returns actual screen dimensions, not resized)

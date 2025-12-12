@@ -4,11 +4,35 @@ mod screenshot;
 mod types;
 
 use crate::types::{ActionResult, AgentResponse};
+use serde::Serialize;
+
+/// Screenshot result with metadata for the frontend
+#[derive(Serialize)]
+pub struct ScreenshotWithMetadata {
+    pub base64_image: String,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub actual_screen_width: u32,
+    pub actual_screen_height: u32,
+}
 
 /// Capture a screenshot and return it as base64
 #[tauri::command]
 async fn capture_screenshot() -> Result<String, String> {
     screenshot::capture_screen().map_err(|e| e.to_string())
+}
+
+/// Capture a screenshot with metadata (dimensions)
+#[tauri::command]
+async fn capture_screenshot_with_metadata() -> Result<ScreenshotWithMetadata, String> {
+    let result = screenshot::capture_screen_with_metadata().map_err(|e| e.to_string())?;
+    Ok(ScreenshotWithMetadata {
+        base64_image: result.base64_image,
+        image_width: result.image_width,
+        image_height: result.image_height,
+        actual_screen_width: result.actual_screen_width,
+        actual_screen_height: result.actual_screen_height,
+    })
 }
 
 /// Process a computer use query
@@ -75,6 +99,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             capture_screenshot,
+            capture_screenshot_with_metadata,
             process_computer_use,
             execute_action,
             test_api_connection,
