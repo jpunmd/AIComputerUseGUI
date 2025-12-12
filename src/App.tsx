@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Settings, Sparkles, Trash2, Play, Square, MousePointer } from 'lucide-react';
 import {
   SettingsPanel,
@@ -32,6 +32,33 @@ function App() {
     setError,
   } = useAgent();
 
+  // Auto-test connection on startup and periodically
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  useEffect(() => {
+    const checkConnection = async () => {
+      const result = await testConnection(settingsRef.current);
+      setIsConnected(result);
+    };
+
+    // Test immediately on mount
+    checkConnection();
+
+    // Then test every 30 seconds
+    const interval = setInterval(checkConnection, 30000);
+    return () => clearInterval(interval);
+  }, [testConnection]);
+
+  // Re-test when settings change
+  useEffect(() => {
+    const checkConnection = async () => {
+      const result = await testConnection(settings);
+      setIsConnected(result);
+    };
+    checkConnection();
+  }, [settings.apiEndpoint, settings.modelId, testConnection]);
+
   const handleTestConnection = async (): Promise<boolean> => {
     const result = await testConnection(settings);
     setIsConnected(result);
@@ -44,10 +71,14 @@ function App() {
     const response = await processQuery(query, settings);
     
     if (response?.success && response.action) {
+      setIsConnected(true);
       setLastAction(response.action);
       if (autoExecute) {
         await handleExecuteAction(response.action);
       }
+    } else if (response === null) {
+      // Query failed, likely connection issue
+      setIsConnected(false);
     }
   };
 
