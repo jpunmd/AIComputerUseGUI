@@ -1,16 +1,14 @@
 import { useState, FormEvent } from 'react';
-import { Send, Loader2, Camera } from 'lucide-react';
+import { Send, Loader2 } from 'lucide-react';
 
 interface CommandInputProps {
   onSubmit: (query: string) => void;
-  onCaptureScreenshot: () => void;
   isProcessing: boolean;
   disabled?: boolean;
 }
 
 export function CommandInput({
   onSubmit,
-  onCaptureScreenshot,
   isProcessing,
   disabled = false,
 }: CommandInputProps) {
@@ -27,17 +25,6 @@ export function CommandInput({
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t border-dark-700">
       <div className="flex gap-3">
-        {/* Screenshot button */}
-        <button
-          type="button"
-          onClick={onCaptureScreenshot}
-          disabled={isProcessing || disabled}
-          className="flex-shrink-0 p-3 rounded-xl bg-dark-700 hover:bg-dark-600 text-dark-300 hover:text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Capture Screenshot"
-        >
-          <Camera className="w-5 h-5" />
-        </button>
-
         {/* Input field */}
         <div className="flex-1 relative">
           <textarea

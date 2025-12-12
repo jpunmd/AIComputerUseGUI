@@ -29,7 +29,6 @@ function App() {
     currentTurn,
     isMultiTurnRunning,
     pendingConfirmation,
-    captureScreenshot,
     processQuery,
     executeAction,
     runMultiTurn,
@@ -132,10 +131,6 @@ function App() {
     } finally {
       setIsExecuting(false);
     }
-  };
-
-  const handleCaptureScreenshot = async () => {
-    await captureScreenshot();
   };
 
   return (
@@ -296,7 +291,6 @@ function App() {
               
               <CommandInput
                 onSubmit={handleSubmit}
-                onCaptureScreenshot={handleCaptureScreenshot}
                 isProcessing={isProcessing}
               />
             </>
