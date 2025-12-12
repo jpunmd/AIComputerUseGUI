@@ -185,6 +185,11 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             // Screenshot action - no-op here, handled separately
         }
         
+        "done" => {
+            // Done action - signals task completion, no-op here
+            println!("Task marked as done by the model");
+        }
+        
         _ => {
             return Err(ActionError::InvalidAction(format!("Unknown action: {}", action.action)));
         }

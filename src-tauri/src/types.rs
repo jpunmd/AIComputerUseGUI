@@ -115,6 +115,12 @@ pub struct AgentResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether the agent believes the task is complete
+    #[serde(default)]
+    pub is_done: bool,
+    /// The agent's reasoning/thinking about what to do next
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// OpenAI-compatible chat message

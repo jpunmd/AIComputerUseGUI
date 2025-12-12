@@ -19,6 +19,8 @@ export interface ActionResult {
     key?: string;
     start_coordinate?: number[];
     end_coordinate?: number[];
+    direction?: string;
+    amount?: number;
   };
 }
 
@@ -28,6 +30,8 @@ export interface AgentResponse {
   coordinate_absolute?: Coordinate;
   success: boolean;
   error?: string;
+  is_done?: boolean;
+  thinking?: string;
 }
 
 export interface Message {

@@ -21,8 +21,20 @@ You may call one or more functions to assist with the user query.
 
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.\n\nThis is an interface to a desktop GUI. You do not have the ability\nto access a terminal or applications in a command line interface.\n\nHere are the actions available:\n1. click: Click the left mouse button at the specified coordinate.\n2. left_click: Same as click.\n3. right_click: Click the right mouse button at the specified coordinate.\n4. double_click: Double-click at the specified coordinate.\n5. left_click_drag: Click and drag from a starting coordinate to an ending coordinate.\n6. scroll: Scroll in a direction ('up', 'down', 'left', 'right') at the specified coordinate.\n7. type: Type the specified text at the current cursor position.\n8. key: Press a keyboard key (e.g., 'enter', 'backspace', 'ctrl+c').\n9. wait: Wait for a specified number of seconds.\n10. screenshot: Take a screenshot of the current screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot"], "type": "string"}, "coordinate": {"description": "The x,y coordinate to click at. Required for click, right_click, double_click, scroll actions.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "Required for 'type' action. The text to type.", "type": "string"}, "key": {"description": "Required for 'key' action. The key to press.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag, the starting coordinate.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag, the ending coordinate.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll action, the direction to scroll.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll action, the amount to scroll.", "type": "number"}, "duration": {"description": "For wait action, the time in seconds to wait.", "type": "number"}}, "required": ["action"], "type": "object"}}}
+{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.\n\nThis is an interface to a desktop GUI. You do not have the ability\nto access a terminal or applications in a command line interface.\n\nHere are the actions available:\n1. click: Click the left mouse button at the specified coordinate.\n2. left_click: Same as click.\n3. right_click: Click the right mouse button at the specified coordinate.\n4. double_click: Double-click the left mouse button at the specified coordinate. Use this to open files, folders, or applications.\n5. left_click_drag: Click and drag from a starting coordinate to an ending coordinate.\n6. scroll: Scroll in a direction ('up', 'down', 'left', 'right') at the specified coordinate.\n7. type: Type the specified text at the current cursor position.\n8. key: Press a keyboard key (e.g., 'enter', 'backspace', 'ctrl+c').\n9. wait: Wait for a specified number of seconds.\n10. screenshot: Take a screenshot of the current screen.\n11. done: Signal that the task has been completed successfully.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done"], "type": "string"}, "coordinate": {"description": "The x,y coordinate to click at. Required for click, right_click, double_click, scroll actions.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "Required for 'type' action. The text to type.", "type": "string"}, "key": {"description": "Required for 'key' action. The key to press.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag, the starting coordinate.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag, the ending coordinate.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll action, the direction to scroll.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll action, the amount to scroll.", "type": "number"}, "duration": {"description": "For wait action, the time in seconds to wait.", "type": "number"}}, "required": ["action"], "type": "object"}}}
 </tools>
+
+# Multi-Turn Task Instructions
+
+You are helping the user accomplish a goal that may require multiple actions. After each action you take, you will receive a new screenshot showing the result. Continue taking actions until the goal is fully achieved, then use the "done" action to signal completion.
+
+Guidelines:
+- Analyze the screenshot carefully before each action
+- Take ONE action at a time - you will see the result before the next action
+- Use double_click to open files, folders, or applications
+- Use single click to select items or press buttons
+- When the task is complete, use action "done" to finish
+- If you encounter an error or cannot proceed, explain the issue
 
 For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
 <tool_call>
@@ -122,12 +134,29 @@ pub async fn call_computer_use_api(
         }
     });
     
+    // Extract thinking/reasoning from the response (text before the tool_call)
+    let thinking = if let Some(tool_call_start) = output_text.find("<tool_call>") {
+        let before_tool_call = output_text[..tool_call_start].trim();
+        if !before_tool_call.is_empty() {
+            Some(before_tool_call.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    // Check if the action is "done" to signal task completion
+    let is_done = action.action == "done";
+    
     let response = AgentResponse {
         output_text,
         action,
         coordinate_absolute,
         success: true,
         error: None,
+        is_done,
+        thinking,
     };
     
     println!("AgentResponse JSON: {}", serde_json::to_string(&response).unwrap_or_default());

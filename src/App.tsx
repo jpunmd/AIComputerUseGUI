@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, Sparkles, Trash2, Play, Square, MousePointer } from 'lucide-react';
+import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat } from 'lucide-react';
 import {
   SettingsPanel,
   ChatHistory,
@@ -15,6 +15,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [autoExecute, setAutoExecute] = useState(false);
+  const [multiTurnMode, setMultiTurnMode] = useState(true);
   const [lastAction, setLastAction] = useState<ActionResult | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
 
@@ -24,9 +25,13 @@ function App() {
     currentScreenshot,
     messages,
     error,
+    currentTurn,
+    isMultiTurnRunning,
     captureScreenshot,
     processQuery,
     executeAction,
+    runMultiTurn,
+    stopMultiTurn,
     clearMessages,
     testConnection,
     setError,
@@ -68,17 +73,24 @@ function App() {
   const handleSubmit = async (query: string) => {
     setError(null);
     setLastAction(null);
-    const response = await processQuery(query, settings);
     
-    if (response?.success && response.action) {
+    if (multiTurnMode) {
+      // Multi-turn mode: run until task is complete
+      await runMultiTurn(query, settings);
       setIsConnected(true);
-      setLastAction(response.action);
-      if (autoExecute) {
-        await handleExecuteAction(response.action);
+    } else {
+      // Single-turn mode: just get one action
+      const response = await processQuery(query, settings);
+      
+      if (response?.success && response.action) {
+        setIsConnected(true);
+        setLastAction(response.action);
+        if (autoExecute) {
+          await handleExecuteAction(response.action);
+        }
+      } else if (response === null) {
+        setIsConnected(false);
       }
-    } else if (response === null) {
-      // Query failed, likely connection issue
-      setIsConnected(false);
     }
   };
 
@@ -111,23 +123,56 @@ function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Auto-execute toggle */}
+          {/* Multi-turn mode toggle */}
           <button
-            onClick={() => setAutoExecute(!autoExecute)}
+            onClick={() => setMultiTurnMode(!multiTurnMode)}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
-              autoExecute
+              multiTurnMode
                 ? 'bg-primary-500/20 text-primary-400 border border-primary-500/50'
                 : 'bg-dark-800 text-dark-400 border border-dark-600 hover:border-dark-500'
             }`}
-            title={autoExecute ? 'Auto-execute enabled' : 'Auto-execute disabled'}
+            title={multiTurnMode ? 'Multi-turn mode: Will continue until task is done' : 'Single-turn mode: One action at a time'}
           >
-            {autoExecute ? (
-              <Play className="w-4 h-4" />
-            ) : (
-              <Square className="w-4 h-4" />
+            <Repeat className="w-4 h-4" />
+            <span className="text-sm">Multi-turn</span>
+            {currentTurn > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 text-xs bg-primary-500/30 rounded">
+                Step {currentTurn}
+              </span>
             )}
-            <span className="text-sm">Auto-execute</span>
           </button>
+
+          {/* Stop button - only show during multi-turn execution */}
+          {isMultiTurnRunning && (
+            <button
+              onClick={stopMultiTurn}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 transition-all"
+              title="Stop multi-turn execution"
+            >
+              <StopCircle className="w-4 h-4" />
+              <span className="text-sm">Stop</span>
+            </button>
+          )}
+
+          {/* Auto-execute toggle - only relevant in single-turn mode */}
+          {!multiTurnMode && (
+            <button
+              onClick={() => setAutoExecute(!autoExecute)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
+                autoExecute
+                  ? 'bg-primary-500/20 text-primary-400 border border-primary-500/50'
+                  : 'bg-dark-800 text-dark-400 border border-dark-600 hover:border-dark-500'
+              }`}
+              title={autoExecute ? 'Auto-execute enabled' : 'Auto-execute disabled'}
+            >
+              {autoExecute ? (
+                <Play className="w-4 h-4" />
+              ) : (
+                <Square className="w-4 h-4" />
+              )}
+              <span className="text-sm">Auto-execute</span>
+            </button>
+          )}
 
           {/* Clear chat */}
           <button
