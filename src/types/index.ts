@@ -45,6 +45,27 @@ export interface Message {
   stepNumber?: number; // For multi-turn, which step this is
 }
 
+// Serializable version of Message for storage (Date as ISO string)
+export interface SerializedMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  screenshot?: string;
+  action?: ActionResult;
+  stepNumber?: number;
+}
+
+// A saved chat session
+export interface ChatSession {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: SerializedMessage[];
+  initialQuery?: string;
+}
+
 export interface AppState {
   isConnected: boolean;
   isProcessing: boolean;

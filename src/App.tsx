@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat, AlertTriangle, Check, X } from 'lucide-react';
+import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat, AlertTriangle, Check, X, Save, History, MessageCircle } from 'lucide-react';
 import {
   SettingsPanel,
   ChatHistory,
   CommandInput,
   ScreenshotViewer,
   StatusBar,
+  SessionHistory,
 } from './components';
 import { useAgent } from './hooks/useAgent';
 import { useSettings } from './hooks/useSettings';
+import { useSessions } from './hooks/useSessions';
 import { ActionResult } from './types';
 
 function App() {
@@ -18,6 +20,7 @@ function App() {
   const [multiTurnMode, setMultiTurnMode] = useState(true);
   const [lastAction, setLastAction] = useState<ActionResult | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [activeTab, setActiveTab] = useState<'chat' | 'history'>('chat');
 
   const { settings, updateSettings, resetSettings } = useSettings();
   const {
@@ -36,7 +39,18 @@ function App() {
     clearMessages,
     testConnection,
     setError,
+    setMessages,
   } = useAgent();
+
+  const {
+    sessions,
+    saveSession,
+    deleteSession,
+    renameSession,
+    exportSessions,
+    importSessions,
+    clearAllSessions,
+  } = useSessions();
 
   // Auto-test connection on startup and periodically
   const settingsRef = useRef(settings);
@@ -185,6 +199,21 @@ function App() {
             <Trash2 className="w-5 h-5" />
           </button>
 
+          {/* Save session */}
+          <button
+            onClick={() => {
+              if (messages.length > 0) {
+                saveSession(messages);
+                setActiveTab('history');
+              }
+            }}
+            disabled={messages.length === 0}
+            className="p-2 rounded-lg bg-dark-800 hover:bg-dark-700 text-dark-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Save session"
+          >
+            <Save className="w-5 h-5" />
+          </button>
+
           {/* Settings button */}
           <button
             onClick={() => setSettingsOpen(true)}
@@ -198,29 +227,78 @@ function App() {
 
       {/* Main content */}
       <main className="flex-1 flex overflow-hidden">
-        {/* Left panel - Chat */}
+        {/* Left panel - Chat/History */}
         <div className="w-[400px] flex flex-col border-r border-dark-800 bg-dark-900/50">
-          <ChatHistory messages={messages} />
-          
-          {/* Execute Action Button */}
-          {lastAction && !autoExecute && (
-            <div className="px-4 py-2 border-t border-dark-700">
-              <button
-                onClick={() => handleExecuteAction(lastAction)}
-                disabled={isExecuting}
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-gradient-to-r from-green-500 to-green-600 hover:from-green-400 hover:to-green-500 text-white font-medium transition-all shadow-lg shadow-green-500/25 disabled:opacity-50"
-              >
-                <MousePointer className="w-4 h-4" />
-                {isExecuting ? 'Executing...' : `Execute: ${lastAction.action}`}
-              </button>
-            </div>
+          {/* Tab buttons */}
+          <div className="flex border-b border-dark-700">
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'chat'
+                  ? 'text-primary-400 border-b-2 border-primary-500 bg-dark-800/50'
+                  : 'text-dark-400 hover:text-white hover:bg-dark-800/30'
+              }`}
+            >
+              <MessageCircle className="w-4 h-4" />
+              Current Chat
+            </button>
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'history'
+                  ? 'text-primary-400 border-b-2 border-primary-500 bg-dark-800/50'
+                  : 'text-dark-400 hover:text-white hover:bg-dark-800/30'
+              }`}
+            >
+              <History className="w-4 h-4" />
+              Saved Sessions
+              {sessions.length > 0 && (
+                <span className="px-1.5 py-0.5 text-xs bg-dark-700 rounded-full">
+                  {sessions.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Tab content */}
+          {activeTab === 'chat' ? (
+            <>
+              <ChatHistory messages={messages} />
+              
+              {/* Execute Action Button */}
+              {lastAction && !autoExecute && (
+                <div className="px-4 py-2 border-t border-dark-700">
+                  <button
+                    onClick={() => handleExecuteAction(lastAction)}
+                    disabled={isExecuting}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-gradient-to-r from-green-500 to-green-600 hover:from-green-400 hover:to-green-500 text-white font-medium transition-all shadow-lg shadow-green-500/25 disabled:opacity-50"
+                  >
+                    <MousePointer className="w-4 h-4" />
+                    {isExecuting ? 'Executing...' : `Execute: ${lastAction.action}`}
+                  </button>
+                </div>
+              )}
+              
+              <CommandInput
+                onSubmit={handleSubmit}
+                onCaptureScreenshot={handleCaptureScreenshot}
+                isProcessing={isProcessing}
+              />
+            </>
+          ) : (
+            <SessionHistory
+              sessions={sessions}
+              onLoadSession={(loadedMessages) => {
+                setMessages(loadedMessages);
+                setActiveTab('chat');
+              }}
+              onDeleteSession={deleteSession}
+              onRenameSession={renameSession}
+              onExportSessions={exportSessions}
+              onImportSessions={importSessions}
+              onClearAllSessions={clearAllSessions}
+            />
           )}
-          
-          <CommandInput
-            onSubmit={handleSubmit}
-            onCaptureScreenshot={handleCaptureScreenshot}
-            isProcessing={isProcessing}
-          />
         </div>
 
         {/* Right panel - Screenshot viewer */}

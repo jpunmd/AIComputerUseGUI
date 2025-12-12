@@ -67,6 +67,9 @@ fn build_system_prompt(verbosity: &str) -> String {
 {}"#, COMPUTER_USE_FUNCTION, verbosity_instructions)
 }
 
+/// Maximum number of recent screenshots to include for context
+const MAX_SCREENSHOT_HISTORY: usize = 3;
+
 /// Call the Qwen3-VL API for computer use
 pub async fn call_computer_use_api(
     api_endpoint: &str,
@@ -77,17 +80,60 @@ pub async fn call_computer_use_api(
     display_height: u32,
     max_tokens: u32,
     verbosity: &str,
+    screenshot_history: Option<Vec<String>>,
 ) -> Result<AgentResponse, ApiError> {
     println!("=== API Call Debug ===");
     println!("Verbosity: {}", verbosity);
     println!("Query: {}", query);
     println!("Screenshot length: {} bytes", screenshot_base64.len());
     println!("Screen size: {}x{}", display_width, display_height);
+    println!("Screenshot history count: {}", screenshot_history.as_ref().map(|h| h.len()).unwrap_or(0));
     
     let client = Client::new();
     
     let system_prompt = build_system_prompt(verbosity);
     println!("System prompt: {}", system_prompt);
+    
+    // Build user content with screenshot history for context
+    let mut user_content: Vec<ContentPart> = Vec::new();
+    
+    // Add recent screenshot history (limited to MAX_SCREENSHOT_HISTORY)
+    if let Some(history) = &screenshot_history {
+        let start_idx = if history.len() > MAX_SCREENSHOT_HISTORY {
+            history.len() - MAX_SCREENSHOT_HISTORY
+        } else {
+            0
+        };
+        
+        for (i, old_screenshot) in history[start_idx..].iter().enumerate() {
+            // Add label for historical screenshots
+            user_content.push(ContentPart::Text {
+                text: format!("[Screenshot {} of {} - previous state]", i + 1, history.len() - start_idx),
+            });
+            user_content.push(ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:image/png;base64,{}", old_screenshot),
+                },
+            });
+        }
+    }
+    
+    // Add current screenshot (always last, most important)
+    if screenshot_history.is_some() && screenshot_history.as_ref().map(|h| !h.is_empty()).unwrap_or(false) {
+        user_content.push(ContentPart::Text {
+            text: "[Current screenshot - latest state]".to_string(),
+        });
+    }
+    user_content.push(ContentPart::ImageUrl {
+        image_url: ImageUrl {
+            url: format!("data:image/png;base64,{}", screenshot_base64),
+        },
+    });
+    
+    // Add the query text
+    user_content.push(ContentPart::Text {
+        text: query.to_string(),
+    });
     
     // Build the chat request
     let request = ChatRequest {
@@ -101,16 +147,7 @@ pub async fn call_computer_use_api(
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: vec![
-                    ContentPart::ImageUrl {
-                        image_url: ImageUrl {
-                            url: format!("data:image/png;base64,{}", screenshot_base64),
-                        },
-                    },
-                    ContentPart::Text {
-                        text: query.to_string(),
-                    },
-                ],
+                content: user_content,
             },
         ],
         max_tokens: Some(max_tokens),

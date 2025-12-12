@@ -22,6 +22,7 @@ export function useAgent() {
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null);
   const stopRequestedRef = useRef(false);
   const confirmationResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const screenshotHistoryRef = useRef<string[]>([]); // Track screenshots for current task
 
   const getScreenSize = useCallback(async (): Promise<[number, number]> => {
     try {
@@ -59,7 +60,8 @@ export function useAgent() {
     screenWidth: number,
     screenHeight: number,
     isFollowUp: boolean = false,
-    stepNumber?: number
+    stepNumber?: number,
+    screenshotHistory?: string[]
   ): Promise<AgentResponse | null> => {
     try {
       // Add user message only for initial query
@@ -74,7 +76,7 @@ export function useAgent() {
         setMessages(prev => [...prev, userMessage]);
       }
 
-      // Send to backend
+      // Send to backend with screenshot history for context
       const response = await invoke<AgentResponse>('process_computer_use', {
         screenshotBase64: screenshot,
         query,
@@ -84,6 +86,7 @@ export function useAgent() {
         displayHeight: screenHeight,
         maxTokens: settings.maxTokens,
         verbosity: settings.verbosity,
+        screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
       });
 
       // Add assistant message - include screenshot so user can see what model saw
@@ -165,6 +168,7 @@ export function useAgent() {
     setError(null);
     setCurrentTurn(0);
     stopRequestedRef.current = false;
+    screenshotHistoryRef.current = []; // Clear screenshot history for new task
 
     try {
       const [screenWidth, screenHeight] = await getScreenSize();
@@ -194,7 +198,7 @@ This screenshot shows the CURRENT state AFTER all these actions.
 If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
         }
 
-        // Process single turn
+        // Process single turn with screenshot history for context
         const response = await processSingleTurn(
           currentQuery, 
           settings, 
@@ -202,8 +206,12 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
           screenWidth, 
           screenHeight, 
           isFollowUp,
-          turn + 1 // Step number for display
+          turn + 1, // Step number for display
+          screenshotHistoryRef.current // Pass screenshot history for context
         );
+        
+        // Add current screenshot to history for next turn
+        screenshotHistoryRef.current.push(screenshot);
 
         if (!response?.success) {
           throw new Error(response?.error || 'Failed to get response');
@@ -356,6 +364,7 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
     setMessages([]);
     setCurrentScreenshot(null);
     setCurrentTurn(0);
+    screenshotHistoryRef.current = []; // Clear screenshot history
   }, []);
 
   const testConnection = useCallback(async (settings: Settings): Promise<boolean> => {
@@ -388,5 +397,6 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
     clearMessages,
     testConnection,
     setError,
+    setMessages,
   };
 }
