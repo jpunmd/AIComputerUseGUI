@@ -1,0 +1,81 @@
+mod actions;
+mod api;
+mod screenshot;
+mod types;
+
+use crate::types::{ActionResult, AgentResponse};
+
+/// Capture a screenshot and return it as base64
+#[tauri::command]
+async fn capture_screenshot() -> Result<String, String> {
+    screenshot::capture_screen().map_err(|e| e.to_string())
+}
+
+/// Process a computer use query
+#[tauri::command]
+async fn process_computer_use(
+    screenshot_base64: String,
+    query: String,
+    api_endpoint: String,
+    model_id: String,
+    display_width: u32,
+    display_height: u32,
+    max_tokens: u32,
+) -> Result<AgentResponse, String> {
+    api::call_computer_use_api(
+        &api_endpoint,
+        &model_id,
+        &screenshot_base64,
+        &query,
+        display_width,
+        display_height,
+        max_tokens,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Execute an action on the computer
+#[tauri::command]
+async fn execute_action(action: String) -> Result<(), String> {
+    println!("execute_action called with: {}", action);
+    
+    let action_result: ActionResult =
+        serde_json::from_str(&action).map_err(|e| format!("Failed to parse action: {}. Input was: {}", e, action))?;
+
+    println!("Parsed action: {:?}", action_result);
+
+    let (width, height) = screenshot::get_screen_dimensions().map_err(|e| e.to_string())?;
+    println!("Screen dimensions: {}x{}", width, height);
+
+    actions::execute_action(&action_result, width, height).map_err(|e| e.to_string())
+}
+
+/// Test API connection
+#[tauri::command]
+async fn test_api_connection(api_endpoint: String, model_id: String) -> Result<bool, String> {
+    api::test_connection(&api_endpoint, &model_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get screen dimensions
+#[tauri::command]
+async fn get_screen_size() -> Result<(u32, u32), String> {
+    screenshot::get_screen_dimensions().map_err(|e| e.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            capture_screenshot,
+            process_computer_use,
+            execute_action,
+            test_api_connection,
+            get_screen_size,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
