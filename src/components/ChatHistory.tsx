@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Message } from '../types';
-import { Bot, User, MousePointer, Keyboard, Move, Info, CheckCircle, AlertCircle, StopCircle } from 'lucide-react';
+import { Bot, User, MousePointer, Keyboard, Move, Info, CheckCircle, AlertCircle, StopCircle, X, ZoomIn } from 'lucide-react';
 
 interface ChatHistoryProps {
   messages: Message[];
@@ -8,6 +8,7 @@ interface ChatHistoryProps {
 
 export function ChatHistory({ messages }: ChatHistoryProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [expandedScreenshot, setExpandedScreenshot] = useState<string | null>(null);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -160,12 +161,18 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
 
                 {/* Screenshot thumbnail */}
                 {message.screenshot && (
-                  <div className="mt-2">
+                  <div className="mt-2 group relative inline-block">
                     <img
                       src={`data:image/png;base64,${message.screenshot}`}
                       alt="Screenshot"
+                      onClick={() => setExpandedScreenshot(message.screenshot!)}
                       className="max-w-[200px] rounded-lg border border-dark-600 opacity-75 hover:opacity-100 transition-opacity cursor-pointer"
                     />
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity">
+                      <div className="bg-black/50 p-2 rounded-full backdrop-blur-sm">
+                        <ZoomIn className="w-5 h-5 text-white" />
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -180,6 +187,29 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
       ))}
       {/* Scroll anchor */}
       <div ref={messagesEndRef} />
+
+      {/* Expanded Screenshot Modal */}
+      {expandedScreenshot && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-8"
+          onClick={() => setExpandedScreenshot(null)}
+        >
+          <div className="relative max-w-full max-h-full">
+            <button
+              onClick={() => setExpandedScreenshot(null)}
+              className="absolute -top-12 right-0 p-2 text-white/70 hover:text-white transition-colors"
+            >
+              <X className="w-8 h-8" />
+            </button>
+            <img
+              src={`data:image/png;base64,${expandedScreenshot}`}
+              alt="Expanded Screenshot"
+              className="max-w-full max-h-[90vh] rounded-lg shadow-2xl border border-dark-700"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
