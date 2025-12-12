@@ -6,7 +6,8 @@ use thiserror::Error;
 
 /// Maximum dimension (width or height) for screenshots sent to the model
 /// This helps reduce token usage while maintaining enough detail for the model
-const MAX_SCREENSHOT_DIMENSION: u32 = 1280;
+/// Set to 1920 to support 1080p scaling (1920x1080) for better model performance on high-res screens
+const MAX_SCREENSHOT_DIMENSION: u32 = 1920;
 
 #[derive(Error, Debug)]
 pub enum ScreenshotError {

@@ -4,7 +4,6 @@ import {
   SettingsPanel,
   ChatHistory,
   CommandInput,
-  ScreenshotViewer,
   StatusBar,
   SessionHistory,
 } from './components';
@@ -25,7 +24,6 @@ function App() {
   const { settings, updateSettings, resetSettings } = useSettings();
   const {
     isProcessing,
-    currentScreenshot,
     messages,
     error,
     currentTurn,
@@ -245,7 +243,7 @@ function App() {
       {/* Main content */}
       <main className="flex-1 flex overflow-hidden">
         {/* Left panel - Chat/History */}
-        <div className="w-[400px] flex flex-col border-r border-dark-800 bg-dark-900/50">
+        <div className="flex-1 flex flex-col bg-dark-900/50">
           {/* Tab buttons */}
           <div className="flex border-b border-dark-700">
             <button
@@ -316,14 +314,6 @@ function App() {
               onClearAllSessions={clearAllSessions}
             />
           )}
-        </div>
-
-        {/* Right panel - Screenshot viewer */}
-        <div className="flex-1 flex flex-col bg-dark-950">
-          <ScreenshotViewer
-            screenshot={currentScreenshot}
-            isLoading={isProcessing}
-          />
         </div>
       </main>
 

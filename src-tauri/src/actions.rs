@@ -174,16 +174,27 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             let text = action.arguments.text.as_ref()
                 .ok_or_else(|| ActionError::MissingArgument("text".to_string()))?;
             
+            println!("Typing text: {}", text);
             enigo.text(text)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+                .map_err(|e| ActionError::ExecutionError(format!("Failed to type text: {}", e)))?;
+            println!("Type executed successfully");
         }
         
         "key" => {
             let key_str = action.arguments.key.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("key".to_string()))?;
+                .ok_or_else(|| {
+                    println!("Key action missing 'key' argument. Action arguments: {:?}", action.arguments);
+                    ActionError::MissingArgument("key".to_string())
+                })?;
+            
+            println!("Pressing key: {}", key_str);
+            
+            // Add a small delay to ensure the target window has focus
+            thread::sleep(Duration::from_millis(100));
             
             // Parse the key string (e.g., "ctrl+c", "enter", "backspace")
             execute_key_sequence(&mut enigo, key_str)?;
+            println!("Key press executed successfully");
         }
         
         "wait" => {
@@ -219,13 +230,19 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
 
 /// Execute a key sequence (e.g., "ctrl+c", "enter")
 fn execute_key_sequence(enigo: &mut Enigo, key_str: &str) -> Result<(), ActionError> {
+    println!("execute_key_sequence called with: '{}'", key_str);
     let parts: Vec<&str> = key_str.split('+').collect();
+    println!("Key parts: {:?}", parts);
     
     if parts.len() == 1 {
         // Single key
         let key = parse_key(parts[0])?;
+        println!("Parsed key: {:?}", key);
         enigo.key(key, Direction::Click)
-            .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+            .map_err(|e| {
+                println!("Enigo key error: {}", e);
+                ActionError::ExecutionError(format!("Key press failed: {}", e))
+            })?;
     } else {
         // Key combination (e.g., ctrl+c)
         let mut modifiers = Vec::new();
