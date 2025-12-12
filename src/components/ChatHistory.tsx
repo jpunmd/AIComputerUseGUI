@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Message } from '../types';
 import { Bot, User, MousePointer, Keyboard, Move, Info, CheckCircle, AlertCircle, StopCircle } from 'lucide-react';
 
@@ -6,6 +7,13 @@ interface ChatHistoryProps {
 }
 
 export function ChatHistory({ messages }: ChatHistoryProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   if (messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-dark-500">
@@ -170,6 +178,8 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
           )}
         </div>
       ))}
+      {/* Scroll anchor */}
+      <div ref={messagesEndRef} />
     </div>
   );
 }
