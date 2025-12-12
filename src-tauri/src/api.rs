@@ -48,11 +48,13 @@ fn build_system_prompt(verbosity: &str) -> String {
     format!(r#"You are a computer control assistant.{}
 
 # Multi-Turn Instructions
-- After each action, you'll see a new screenshot with the result
-- Check if the previous action succeeded before repeating it
-- If the screen changed as expected, proceed to the next step
-- Use "done" action when the task is complete
-- Do NOT repeat the same action if it already worked
+- You will receive a list of actions already completed and a screenshot of the CURRENT state
+- The screenshot shows what happened AFTER all listed actions were executed
+- TRUST the action history - if an action is listed as completed, it was done
+- Do NOT repeat actions that are already in the history
+- Analyze the screenshot to verify success, then decide the NEXT action
+- If the goal appears complete in the screenshot, use "done"
+- For scroll: always include direction ("up", "down", "left", "right")
 {}"#, COMPUTER_USE_FUNCTION, verbosity_instructions)
 }
 

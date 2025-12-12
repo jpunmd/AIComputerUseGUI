@@ -122,24 +122,28 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
         }
         
         "scroll" => {
-            let coord = action.arguments.coordinate.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("coordinate".to_string()))?;
+            let coord = action.arguments.coordinate.as_ref();
             let direction = action.arguments.direction.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("direction".to_string()))?;
+                .map(|s| s.as_str())
+                .unwrap_or("down"); // Default to down if not specified
             
-            if coord.len() < 2 {
-                return Err(ActionError::InvalidAction("coordinate must have x and y values".to_string()));
+            // If we have coordinates, move there first
+            if let Some(coord) = coord {
+                if coord.len() >= 2 {
+                    let x = (coord[0] / 1000.0 * screen_width as f64) as i32;
+                    let y = (coord[1] / 1000.0 * screen_height as f64) as i32;
+                    
+                    enigo.move_mouse(x, y, Coordinate::Abs)
+                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+                    thread::sleep(Duration::from_millis(100));
+                }
             }
             
-            let x = (coord[0] / 1000.0 * screen_width as f64) as i32;
-            let y = (coord[1] / 1000.0 * screen_height as f64) as i32;
-            let amount = action.arguments.amount.unwrap_or(3);
+            let amount = action.arguments.amount.unwrap_or(5);
             
-            enigo.move_mouse(x, y, Coordinate::Abs)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
+            println!("Scroll: direction={}, amount={}", direction, amount);
             
-            match direction.as_str() {
+            match direction {
                 "up" => {
                     enigo.scroll(amount, enigo::Axis::Vertical)
                         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
@@ -156,8 +160,14 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
                     enigo.scroll(amount, enigo::Axis::Horizontal)
                         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
                 }
-                _ => return Err(ActionError::InvalidAction(format!("Unknown scroll direction: {}", direction))),
+                _ => {
+                    println!("Unknown scroll direction '{}', defaulting to down", direction);
+                    enigo.scroll(-amount, enigo::Axis::Vertical)
+                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+                }
             }
+            
+            println!("Scroll executed successfully");
         }
         
         "type" => {

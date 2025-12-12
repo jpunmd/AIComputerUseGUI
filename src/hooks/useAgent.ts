@@ -163,7 +163,7 @@ export function useAgent() {
       let turn = 0;
       let currentQuery = query;
       let isFollowUp = false;
-      let lastAction: string | null = null;
+      const actionHistory: string[] = []; // Track ALL actions taken
 
       while (turn < MAX_TURNS && !stopRequestedRef.current) {
         setCurrentTurn(turn + 1);
@@ -174,9 +174,16 @@ export function useAgent() {
           throw new Error('Failed to capture screenshot');
         }
 
-        // Build the query for follow-up turns - include what action was just taken
-        if (isFollowUp && lastAction) {
-          currentQuery = `Goal: "${query}". I just performed: ${lastAction}. This screenshot shows the CURRENT state. Check if the goal is achieved - if yes, use "done". If not, what's the NEXT action?`;
+        // Build the query for follow-up turns - include FULL action history
+        if (isFollowUp && actionHistory.length > 0) {
+          const historyStr = actionHistory.map((a, i) => `${i + 1}. ${a}`).join('\n');
+          currentQuery = `Goal: "${query}"
+
+Actions already completed:
+${historyStr}
+
+This screenshot shows the CURRENT state AFTER all these actions.
+If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
         }
 
         // Process single turn
@@ -210,13 +217,16 @@ export function useAgent() {
         const action = response.action;
         let actionDescription = action.action;
         if (action.arguments?.coordinate) {
-          actionDescription += ` at (${action.arguments.coordinate[0]}, ${action.arguments.coordinate[1]})`;
+          actionDescription += ` at (${Math.round(action.arguments.coordinate[0])}, ${Math.round(action.arguments.coordinate[1])})`;
         }
         if (action.arguments?.text) {
-          actionDescription += ` "${action.arguments.text}"`;
+          actionDescription += `: "${action.arguments.text}"`;
         }
         if (action.arguments?.key) {
-          actionDescription += ` key:${action.arguments.key}`;
+          actionDescription += `: ${action.arguments.key}`;
+        }
+        if (action.arguments?.direction) {
+          actionDescription += ` ${action.arguments.direction}`;
         }
 
         // Execute the action
@@ -225,8 +235,8 @@ export function useAgent() {
           throw new Error('Failed to execute action');
         }
 
-        // Store for next iteration context
-        lastAction = actionDescription;
+        // Add to action history for context
+        actionHistory.push(actionDescription);
 
         // Wait for UI to update after action
         await delay(ACTION_DELAY_MS);
