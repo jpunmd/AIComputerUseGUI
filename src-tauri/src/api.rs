@@ -19,10 +19,10 @@ const COMPUTER_USE_FUNCTION: &str = r#"
 
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done"], "type": "string"}, "coordinate": {"description": "The x,y coordinate for click/scroll actions.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
+{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm"], "type": "string"}, "coordinate": {"description": "The x,y coordinate for click/scroll actions.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
 </tools>
 
-Actions: click, double_click (open items), right_click, type, key, scroll, done (task complete).
+Actions: click, double_click (open items), right_click, type, key, scroll, done (task complete), confirm (ask user before risky action).
 
 For each action, return JSON in <tool_call></tool_call> tags:
 <tool_call>
@@ -46,6 +46,15 @@ Be brief. You MUST always output a tool_call. When the task is complete, output 
 fn build_system_prompt(verbosity: &str) -> String {
     let verbosity_instructions = get_verbosity_instructions(verbosity);
     format!(r#"You are a computer control assistant.{}
+
+# Safety Guidelines - CRITICAL
+- ONLY perform actions specifically requested by the user
+- Be PRECISE: if asked to delete "folder X", delete ONLY folder X, not other items
+- NEVER select multiple items unless explicitly asked (avoid Ctrl+A, Shift+Click on unrelated items)
+- For destructive actions (delete, format, uninstall, close without saving), use "confirm" action first
+- The "confirm" action pauses and asks the user for approval before proceeding
+- When in doubt about scope, use "confirm" to clarify with the user
+- Do not perform actions that affect files/folders/applications the user did not mention
 
 # Multi-Turn Instructions
 - You will receive a list of actions already completed and a screenshot of the CURRENT state

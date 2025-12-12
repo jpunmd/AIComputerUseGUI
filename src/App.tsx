@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat } from 'lucide-react';
+import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat, AlertTriangle, Check, X } from 'lucide-react';
 import {
   SettingsPanel,
   ChatHistory,
@@ -27,6 +27,7 @@ function App() {
     error,
     currentTurn,
     isMultiTurnRunning,
+    pendingConfirmation,
     captureScreenshot,
     processQuery,
     executeAction,
@@ -230,6 +231,46 @@ function App() {
           />
         </div>
       </main>
+
+      {/* Confirmation Dialog */}
+      {pendingConfirmation && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-dark-900 border border-dark-700 rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-6 py-4 bg-yellow-500/10 border-b border-yellow-500/30">
+              <div className="p-2 rounded-lg bg-yellow-500/20">
+                <AlertTriangle className="w-5 h-5 text-yellow-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-yellow-400">Confirmation Required</h3>
+            </div>
+            
+            {/* Content */}
+            <div className="px-6 py-5">
+              <p className="text-dark-200 leading-relaxed">
+                {pendingConfirmation.message}
+              </p>
+            </div>
+            
+            {/* Actions */}
+            <div className="flex gap-3 px-6 py-4 bg-dark-800/50 border-t border-dark-700">
+              <button
+                onClick={pendingConfirmation.onDeny}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-dark-300 hover:text-white transition-all border border-dark-600"
+              >
+                <X className="w-4 h-4" />
+                <span>Deny</span>
+              </button>
+              <button
+                onClick={pendingConfirmation.onConfirm}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-green-500 to-green-600 hover:from-green-400 hover:to-green-500 text-white font-medium transition-all shadow-lg shadow-green-500/25"
+              >
+                <Check className="w-4 h-4" />
+                <span>Approve</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Error toast */}
       {error && (

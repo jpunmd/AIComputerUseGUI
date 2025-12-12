@@ -6,6 +6,12 @@ import { Settings, AgentResponse, Message } from '../types';
 const MAX_TURNS = 20; // Maximum number of turns to prevent infinite loops
 const ACTION_DELAY_MS = 1500; // Delay between action and next screenshot (increased for UI to update)
 
+export interface ConfirmationRequest {
+  message: string;
+  onConfirm: () => void;
+  onDeny: () => void;
+}
+
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentScreenshot, setCurrentScreenshot] = useState<string | null>(null);
@@ -13,7 +19,9 @@ export function useAgent() {
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
   const [isMultiTurnRunning, setIsMultiTurnRunning] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null);
   const stopRequestedRef = useRef(false);
+  const confirmationResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   const getScreenSize = useCallback(async (): Promise<[number, number]> => {
     try {
@@ -213,6 +221,62 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
           break;
         }
 
+        // Check if confirmation is needed
+        if (response.action.action === 'confirm') {
+          const confirmMessage = response.action.arguments?.text || 'The AI wants to perform a potentially risky action. Proceed?';
+          
+          // Show confirmation request in chat
+          const confirmSystemMessage: Message = {
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: `⚠️ Confirmation needed: ${confirmMessage}`,
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, confirmSystemMessage]);
+          
+          // Wait for user confirmation
+          const confirmed = await new Promise<boolean>((resolve) => {
+            confirmationResolveRef.current = resolve;
+            setPendingConfirmation({
+              message: confirmMessage,
+              onConfirm: () => {
+                resolve(true);
+                setPendingConfirmation(null);
+                confirmationResolveRef.current = null;
+              },
+              onDeny: () => {
+                resolve(false);
+                setPendingConfirmation(null);
+                confirmationResolveRef.current = null;
+              },
+            });
+          });
+          
+          if (!confirmed) {
+            const deniedMessage: Message = {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: `⛔ Action denied by user. Task stopped.`,
+              timestamp: new Date(),
+            };
+            setMessages(prev => [...prev, deniedMessage]);
+            break;
+          }
+          
+          const approvedMessage: Message = {
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: `✓ Action approved. Continuing...`,
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, approvedMessage]);
+          
+          // Don't add confirm to action history, just continue to get next action
+          turn++;
+          isFollowUp = true;
+          continue;
+        }
+
         // Format the action for context in next turn
         const action = response.action;
         let actionDescription = action.action;
@@ -315,6 +379,7 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
     error,
     currentTurn,
     isMultiTurnRunning,
+    pendingConfirmation,
     captureScreenshot,
     processQuery,
     executeAction,

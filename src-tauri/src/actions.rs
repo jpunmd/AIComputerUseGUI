@@ -200,6 +200,16 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             println!("Task marked as done by the model");
         }
         
+        "confirm" => {
+            // Confirm action - signals need for user confirmation before proceeding
+            // The actual confirmation is handled in the frontend
+            let message = action.arguments.text.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("Proceed with this action?");
+            println!("Confirmation requested: {}", message);
+        }
+        }
+        
         _ => {
             return Err(ActionError::InvalidAction(format!("Unknown action: {}", action.action)));
         }
