@@ -129,8 +129,8 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
 
               {/* Message content */}
               <div
-                className={`max-w-[80%] ${
-                  message.role === 'user' ? 'text-right' : ''
+                className={`max-w-[80%] flex flex-col ${
+                  message.role === 'user' ? 'items-end text-right' : 'items-start'
                 }`}
               >
                 {/* Step number badge for multi-turn */}
