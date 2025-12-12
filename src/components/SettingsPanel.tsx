@@ -101,6 +101,25 @@ export function SettingsPanel({
             />
           </div>
 
+          {/* Verbosity */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-dark-300">
+              Response Verbosity
+            </label>
+            <select
+              value={settings.verbosity}
+              onChange={(e) => onUpdateSettings({ verbosity: e.target.value as 'concise' | 'normal' | 'verbose' })}
+              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
+            >
+              <option value="concise">Concise - Just actions, minimal explanation</option>
+              <option value="normal">Normal - Brief explanations</option>
+              <option value="verbose">Verbose - Detailed reasoning</option>
+            </select>
+            <p className="text-xs text-dark-500">
+              Controls how much the AI explains its reasoning
+            </p>
+          </div>
+
           {/* Test Connection */}
           <div className="pt-2">
             <button

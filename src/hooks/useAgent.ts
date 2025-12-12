@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { Settings, AgentResponse, Message } from '../types';
 
@@ -27,7 +28,10 @@ export function useAgent() {
   const captureScreenshot = useCallback(async (): Promise<string | null> => {
     try {
       const screenshot = await invoke<string>('capture_screenshot');
-      setCurrentScreenshot(screenshot);
+      // Use flushSync to ensure the screenshot is rendered immediately
+      flushSync(() => {
+        setCurrentScreenshot(screenshot);
+      });
       return screenshot;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -70,6 +74,7 @@ export function useAgent() {
         displayWidth: screenWidth,
         displayHeight: screenHeight,
         maxTokens: settings.maxTokens,
+        verbosity: settings.verbosity,
       });
 
       // Add assistant message
@@ -166,9 +171,9 @@ export function useAgent() {
           throw new Error('Failed to capture screenshot');
         }
 
-        // Build the query for follow-up turns
+        // Build the query for follow-up turns - be direct to avoid repetition
         if (isFollowUp) {
-          currentQuery = `Continue with the task: "${query}". Here is the current screen state after the previous action. What is the next step?`;
+          currentQuery = `Goal: "${query}". This is the screen AFTER your last action. If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
         }
 
         // Process single turn

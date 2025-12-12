@@ -21,6 +21,7 @@ async fn process_computer_use(
     display_width: u32,
     display_height: u32,
     max_tokens: u32,
+    verbosity: String,
 ) -> Result<AgentResponse, String> {
     api::call_computer_use_api(
         &api_endpoint,
@@ -30,6 +31,7 @@ async fn process_computer_use(
         display_width,
         display_height,
         max_tokens,
+        &verbosity,
     )
     .await
     .map_err(|e| e.to_string())

@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS: Settings = {
   displayWidth: 1000,
   displayHeight: 1000,
   maxTokens: 2048,
+  verbosity: 'concise',
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';

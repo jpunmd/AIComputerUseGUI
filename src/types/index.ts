@@ -4,6 +4,7 @@ export interface Settings {
   displayWidth: number;
   displayHeight: number;
   maxTokens: number;
+  verbosity: 'concise' | 'normal' | 'verbose';
 }
 
 export interface Coordinate {
