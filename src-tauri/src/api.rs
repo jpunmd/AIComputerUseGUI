@@ -19,8 +19,16 @@ const COMPUTER_USE_FUNCTION: &str = r#"
 
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm"], "type": "string"}, "coordinate": {"description": "The x,y coordinate for click/scroll actions.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
+{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm"], "type": "string"}, "coordinate": {"description": "The x,y coordinate in 0-1000 normalized space. (0,0) is top-left, (1000,1000) is bottom-right.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
 </tools>
+
+# IMPORTANT: Coordinate System
+- Use NORMALIZED coordinates from 0 to 1000
+- (0, 0) = top-left corner of the screen
+- (1000, 1000) = bottom-right corner of the screen
+- (500, 500) = center of the screen
+- Example: An icon at the left edge, about 1/4 down from top = approximately (50, 250)
+- Example: A button in the center-right area = approximately (750, 500)
 
 Actions: click, double_click (open items), right_click, type, key, scroll, done (task complete), confirm (ask user before risky action).
 
@@ -68,7 +76,8 @@ fn build_system_prompt(verbosity: &str) -> String {
 }
 
 /// Maximum number of recent screenshots to include for context
-const MAX_SCREENSHOT_HISTORY: usize = 3;
+/// Set to 0 to disable screenshot history (recommended - multiple images can confuse the model)
+const MAX_SCREENSHOT_HISTORY: usize = 0;
 
 /// Call the Qwen3-VL API for computer use
 pub async fn call_computer_use_api(
@@ -94,36 +103,40 @@ pub async fn call_computer_use_api(
     let system_prompt = build_system_prompt(verbosity);
     println!("System prompt: {}", system_prompt);
     
-    // Build user content with screenshot history for context
+    // Build user content - only the current screenshot
+    // Multiple images can confuse some models about which one to act on
     let mut user_content: Vec<ContentPart> = Vec::new();
     
-    // Add recent screenshot history (limited to MAX_SCREENSHOT_HISTORY)
-    if let Some(history) = &screenshot_history {
-        let start_idx = if history.len() > MAX_SCREENSHOT_HISTORY {
-            history.len() - MAX_SCREENSHOT_HISTORY
-        } else {
-            0
-        };
-        
-        for (i, old_screenshot) in history[start_idx..].iter().enumerate() {
-            // Add label for historical screenshots
-            user_content.push(ContentPart::Text {
-                text: format!("[Screenshot {} of {} - previous state]", i + 1, history.len() - start_idx),
-            });
-            user_content.push(ContentPart::ImageUrl {
-                image_url: ImageUrl {
-                    url: format!("data:image/png;base64,{}", old_screenshot),
-                },
-            });
+    // Only add screenshot history if explicitly enabled (MAX_SCREENSHOT_HISTORY > 0)
+    if MAX_SCREENSHOT_HISTORY > 0 {
+        if let Some(history) = &screenshot_history {
+            let start_idx = if history.len() > MAX_SCREENSHOT_HISTORY {
+                history.len() - MAX_SCREENSHOT_HISTORY
+            } else {
+                0
+            };
+            
+            for (i, old_screenshot) in history[start_idx..].iter().enumerate() {
+                user_content.push(ContentPart::Text {
+                    text: format!("[Previous state {}]", i + 1),
+                });
+                user_content.push(ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: format!("data:image/png;base64,{}", old_screenshot),
+                    },
+                });
+            }
+            
+            // Add clear separator before current screenshot
+            if !history.is_empty() {
+                user_content.push(ContentPart::Text {
+                    text: "=== CURRENT STATE (perform actions on this image) ===".to_string(),
+                });
+            }
         }
     }
     
-    // Add current screenshot (always last, most important)
-    if screenshot_history.is_some() && screenshot_history.as_ref().map(|h| !h.is_empty()).unwrap_or(false) {
-        user_content.push(ContentPart::Text {
-            text: "[Current screenshot - latest state]".to_string(),
-        });
-    }
+    // Add current screenshot - this is the only image if history is disabled
     user_content.push(ContentPart::ImageUrl {
         image_url: ImageUrl {
             url: format!("data:image/png;base64,{}", screenshot_base64),
