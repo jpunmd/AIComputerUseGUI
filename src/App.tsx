@@ -79,6 +79,23 @@ function App() {
     checkConnection();
   }, [settings.apiEndpoint, settings.modelId, testConnection]);
 
+  // Auto-save session when task completes (multi-turn mode finishes)
+  const prevIsMultiTurnRunning = useRef(isMultiTurnRunning);
+  useEffect(() => {
+    // Detect when multi-turn just finished (was running, now not running)
+    if (prevIsMultiTurnRunning.current && !isMultiTurnRunning && messages.length > 0) {
+      // Check if the last message indicates completion (not an error)
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'system' && 
+          (lastMessage.content.includes('✓ Task completed') || 
+           lastMessage.content.includes('stopped by user') ||
+           lastMessage.content.includes('Action denied'))) {
+        saveSession(messages);
+      }
+    }
+    prevIsMultiTurnRunning.current = isMultiTurnRunning;
+  }, [isMultiTurnRunning, messages, saveSession]);
+
   const handleTestConnection = async (): Promise<boolean> => {
     const result = await testConnection(settings);
     setIsConnected(result);

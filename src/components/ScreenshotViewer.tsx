@@ -1,5 +1,5 @@
 import { Monitor, ZoomIn, ZoomOut, Download } from 'lucide-react';
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { Coordinate } from '../types';
 
 interface ScreenshotViewerProps {
@@ -14,6 +14,14 @@ export function ScreenshotViewer({
   isLoading = false,
 }: ScreenshotViewerProps) {
   const [zoom, setZoom] = useState(1);
+  const [imageKey, setImageKey] = useState(0);
+  
+  // Update image key when screenshot changes to force re-render
+  React.useEffect(() => {
+    if (screenshot) {
+      setImageKey(prev => prev + 1);
+    }
+  }, [screenshot]);
 
   const handleZoomIn = () => setZoom((prev) => Math.min(prev + 0.25, 3));
   const handleZoomOut = () => setZoom((prev) => Math.max(prev - 0.25, 0.5));
@@ -22,7 +30,9 @@ export function ScreenshotViewer({
       const link = document.createElement('a');
       link.href = `data:image/png;base64,${screenshot}`;
       link.download = `screenshot-${Date.now()}.png`;
+      document.body.appendChild(link);
       link.click();
+      document.body.removeChild(link);
     }
   };
 
@@ -83,7 +93,7 @@ export function ScreenshotViewer({
               style={{ transform: `scale(${zoom})`, transformOrigin: 'center' }}
             >
               <img
-                key={screenshot.slice(-100)} // Force re-render when screenshot changes
+                key={imageKey}
                 src={`data:image/png;base64,${screenshot}`}
                 alt="Screen capture"
                 className="max-w-full max-h-full object-contain"
