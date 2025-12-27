@@ -265,9 +265,20 @@ fn parse_tool_call(response: &str) -> Result<ActionResult, ApiError> {
         });
     }
     
-    Err(ApiError::ParseError(
-        format!("Could not find or parse tool_call in response: {}", response),
-    ))
+    // No tool_call found - this is a conversational response, return "none" action
+    // This allows the agent to respond to queries that don't require computer actions
+    Ok(ActionResult {
+        action: "none".to_string(),
+        arguments: crate::types::ActionResultArguments {
+            coordinate: None,
+            text: Some(response.to_string()),
+            key: None,
+            start_coordinate: None,
+            end_coordinate: None,
+            direction: None,
+            amount: None,
+        },
+    })
 }
 
 /// Test the API connection

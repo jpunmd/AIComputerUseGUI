@@ -165,8 +165,8 @@ export function useAgent() {
   // Execute action
   const executeAction = useCallback(async (action: AgentResponse['action']): Promise<boolean> => {
     try {
-      // Skip execution for "done" action
-      if (action.action === 'done') {
+      // Skip execution for "done" or "none" (conversational) actions
+      if (action.action === 'done' || action.action === 'none') {
         return true;
       }
       await invoke('execute_action', { action: JSON.stringify(action) });
@@ -194,10 +194,16 @@ export function useAgent() {
       let turn = 0;
       let currentQuery = query;
       let isFollowUp = false;
-      const actionHistory: { action: string; reasoning?: string }[] = []; // Track actions with reasoning
+      const actionHistory: string[] = []; // Track executed actions only
 
       while (turn < settings.maxTurns && !stopRequestedRef.current) {
         setCurrentTurn(turn + 1);
+
+        // Small additional delay before screenshot to ensure screen has updated
+        // (the main delay happens after action execution, but this catches edge cases)
+        if (isFollowUp) {
+          await delay(100);
+        }
 
         // Capture fresh screenshot with metadata (includes image dimensions)
         const capture = await captureScreenshotWithMetadata();
@@ -205,25 +211,22 @@ export function useAgent() {
           throw new Error('Failed to capture screenshot');
         }
 
-        // Build the query for follow-up turns - include last 5 actions with reasoning
+        // Build the query for follow-up turns - include last 5 actions (executed actions only, no reasoning to avoid confusion)
         if (isFollowUp && actionHistory.length > 0) {
           // Get the last 5 actions (or all if less than 5)
           const recentActions = actionHistory.slice(-5);
-          const historyStr = recentActions.map((entry, i) => {
+          const historyStr = recentActions.map((action, i) => {
             const stepNum = actionHistory.length - recentActions.length + i + 1;
-            if (entry.reasoning) {
-              return `${stepNum}. Action: ${entry.action}\n   Reasoning: ${entry.reasoning}`;
-            }
-            return `${stepNum}. Action: ${entry.action}`;
-          }).join('\n\n');
+            return `${stepNum}. ${action}`;
+          }).join('\n');
           
           currentQuery = `Goal: "${query}"
 
-Recent actions (last ${recentActions.length} of ${actionHistory.length} total):
+Actions completed (${actionHistory.length} total):
 ${historyStr}
 
-This screenshot shows the CURRENT state AFTER all these actions.
-If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
+The screenshot shows the CURRENT state. What is the single NEXT action to take?
+Remember: Output exactly ONE action per response. If the goal is complete, use "done".`;
         }
 
         // Process single turn with screenshot history for context
@@ -255,6 +258,12 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
             timestamp: new Date(),
           };
           setMessages(prev => [...prev, doneMessage]);
+          break;
+        }
+
+        // Check if this is a conversational response (no computer action needed)
+        if (response.action.action === 'none') {
+          // Just display the response, no action to execute, stop the loop
           break;
         }
 
@@ -336,11 +345,8 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
           throw new Error('Failed to execute action');
         }
 
-        // Add to action history for context (include reasoning/thinking if available)
-        actionHistory.push({
-          action: actionDescription,
-          reasoning: response.thinking || undefined,
-        });
+        // Add to action history for context
+        actionHistory.push(actionDescription);
 
         // Wait for UI to update after action
         await delay(settings.actionDelayMs);
