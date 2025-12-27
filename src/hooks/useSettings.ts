@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a computer control assistant.
+export const DEFAULT_SYSTEM_PROMPT = `You are a helpful computer control assistant.
 
 # Tools
 
@@ -47,12 +47,13 @@ For each action, return JSON in <tool_call></tool_call> tags:
 You may think through the problem and explain your reasoning. However, you MUST always end your response with a tool_call. When the task is complete, output a tool_call with action "done".`;
 
 const DEFAULT_SETTINGS: Settings = {
-  apiEndpoint: 'http://localhost:8000/v1',
+  apiEndpoint: 'http://localhost:8889/v1',
   modelId: 'Qwen/Qwen3-VL-30B-A3B-Instruct',
   displayWidth: 1000,
   displayHeight: 1000,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
-  actionDelayMs: 1500, // Delay after action before next screenshot (ms)
+  actionDelayMs: 250, // Delay after action before next screenshot (ms)
+  maxTurns: 20, // Maximum number of turns before stopping
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';

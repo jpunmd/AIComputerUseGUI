@@ -5,6 +5,7 @@ export interface Settings {
   displayHeight: number;
   systemPrompt: string;
   actionDelayMs: number; // Delay after action before next screenshot
+  maxTurns: number; // Maximum number of turns before stopping
 }
 
 export interface Coordinate {

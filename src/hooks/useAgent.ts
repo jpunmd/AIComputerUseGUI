@@ -3,8 +3,6 @@ import { flushSync } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { Settings, AgentResponse, Message, ScreenshotWithMetadata } from '../types';
 
-const MAX_TURNS = 20; // Maximum number of turns to prevent infinite loops
-
 export interface ConfirmationRequest {
   message: string;
   onConfirm: () => void;
@@ -196,9 +194,9 @@ export function useAgent() {
       let turn = 0;
       let currentQuery = query;
       let isFollowUp = false;
-      const actionHistory: string[] = []; // Track ALL actions taken
+      const actionHistory: { action: string; reasoning?: string }[] = []; // Track actions with reasoning
 
-      while (turn < MAX_TURNS && !stopRequestedRef.current) {
+      while (turn < settings.maxTurns && !stopRequestedRef.current) {
         setCurrentTurn(turn + 1);
 
         // Capture fresh screenshot with metadata (includes image dimensions)
@@ -207,12 +205,21 @@ export function useAgent() {
           throw new Error('Failed to capture screenshot');
         }
 
-        // Build the query for follow-up turns - include FULL action history
+        // Build the query for follow-up turns - include last 5 actions with reasoning
         if (isFollowUp && actionHistory.length > 0) {
-          const historyStr = actionHistory.map((a, i) => `${i + 1}. ${a}`).join('\n');
+          // Get the last 5 actions (or all if less than 5)
+          const recentActions = actionHistory.slice(-5);
+          const historyStr = recentActions.map((entry, i) => {
+            const stepNum = actionHistory.length - recentActions.length + i + 1;
+            if (entry.reasoning) {
+              return `${stepNum}. Action: ${entry.action}\n   Reasoning: ${entry.reasoning}`;
+            }
+            return `${stepNum}. Action: ${entry.action}`;
+          }).join('\n\n');
+          
           currentQuery = `Goal: "${query}"
 
-Actions already completed:
+Recent actions (last ${recentActions.length} of ${actionHistory.length} total):
 ${historyStr}
 
 This screenshot shows the CURRENT state AFTER all these actions.
@@ -329,8 +336,11 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
           throw new Error('Failed to execute action');
         }
 
-        // Add to action history for context
-        actionHistory.push(actionDescription);
+        // Add to action history for context (include reasoning/thinking if available)
+        actionHistory.push({
+          action: actionDescription,
+          reasoning: response.thinking || undefined,
+        });
 
         // Wait for UI to update after action
         await delay(settings.actionDelayMs);
@@ -339,11 +349,11 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
         isFollowUp = true;
       }
 
-      if (turn >= MAX_TURNS) {
+      if (turn >= settings.maxTurns) {
         const maxTurnsMessage: Message = {
           id: crypto.randomUUID(),
           role: 'system',
-          content: `⚠ Reached maximum of ${MAX_TURNS} turns. Task may not be complete.`,
+          content: `⚠ Reached maximum of ${settings.maxTurns} turns. Task may not be complete.`,
           timestamp: new Date(),
         };
         setMessages(prev => [...prev, maxTurnsMessage]);

@@ -203,6 +203,25 @@ export function SettingsPanel({
             </p>
           </div>
 
+          {/* Max Turns */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-dark-300">
+              Max Turns
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              value={settings.maxTurns}
+              onChange={(e) => onUpdateSettings({ maxTurns: Math.max(1, parseInt(e.target.value) || 20) })}
+              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
+            />
+            <p className="text-xs text-dark-500">
+              Maximum number of actions before automatically stopping. Prevents infinite loops.
+            </p>
+          </div>
+
           {/* Test Connection */}
           <div className="pt-2">
             <button
