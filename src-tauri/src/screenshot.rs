@@ -1,5 +1,4 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use enigo::{Enigo, Mouse, Settings};
 use image::codecs::png::PngEncoder;
 use image::{ImageEncoder, RgbaImage, imageops::FilterType};
 use screenshots::Screen;
@@ -50,33 +49,6 @@ fn resize_image(img: RgbaImage, max_dimension: u32) -> RgbaImage {
     image::imageops::resize(&img, new_width, new_height, FilterType::Lanczos3)
 }
 
-/// Draw a cursor on the image at the given coordinates
-fn draw_cursor(img: &mut RgbaImage, x: i32, y: i32) {
-    let radius = 8;
-    let outline_width = 2;
-    let color = image::Rgba([255, 0, 0, 255]); // Red
-    let outline_color = image::Rgba([255, 255, 255, 255]); // White
-    
-    let width = img.width() as i32;
-    let height = img.height() as i32;
-    
-    for dy in -(radius + outline_width)..=(radius + outline_width) {
-        for dx in -(radius + outline_width)..=(radius + outline_width) {
-            let dist_sq = dx*dx + dy*dy;
-            let px = x + dx;
-            let py = y + dy;
-            
-            if px >= 0 && px < width && py >= 0 && py < height {
-                if dist_sq <= radius*radius {
-                    img.put_pixel(px as u32, py as u32, color);
-                } else if dist_sq <= (radius + outline_width)*(radius + outline_width) {
-                    img.put_pixel(px as u32, py as u32, outline_color);
-                }
-            }
-        }
-    }
-}
-
 /// Screenshot result containing the base64 image and dimensions
 #[derive(Debug, Clone)]
 pub struct ScreenshotResult {
@@ -109,18 +81,8 @@ pub fn capture_screen_with_metadata(max_dimension: Option<u32>) -> Result<Screen
         .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
     
     // Convert to RgbaImage for resizing
-    let mut rgba_image = RgbaImage::from_raw(image.width(), image.height(), image.into_raw())
+    let rgba_image = RgbaImage::from_raw(image.width(), image.height(), image.into_raw())
         .ok_or_else(|| ScreenshotError::EncodeError("Failed to create RGBA image".to_string()))?;
-    
-    // Draw cursor
-    if let Ok(enigo) = Enigo::new(&Settings::default()) {
-        if let Ok((x, y)) = enigo.location() {
-            // Adjust for screen position
-            let local_x = x - screen_x;
-            let local_y = y - screen_y;
-            draw_cursor(&mut rgba_image, local_x, local_y);
-        }
-    }
 
     // Resize the image to reduce token usage
     let resized = resize_image(rgba_image, max_dim);
