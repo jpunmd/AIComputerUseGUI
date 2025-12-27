@@ -1,6 +1,8 @@
-import { useState } from 'react';
-import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server, RefreshCw, FileText } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { Settings } from '../types';
+import { DEFAULT_SYSTEM_PROMPT } from '../hooks/useSettings';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -21,6 +23,9 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<boolean | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [modelFetchError, setModelFetchError] = useState<string | null>(null);
 
   const handleTestConnection = async () => {
     setIsTesting(true);
@@ -30,6 +35,34 @@ export function SettingsPanel({
     setIsTesting(false);
     setTimeout(() => setTestResult(null), 3000);
   };
+
+  const fetchModels = async () => {
+    setIsFetchingModels(true);
+    setModelFetchError(null);
+    try {
+      const models = await invoke<string[]>('fetch_available_models', {
+        apiEndpoint: settings.apiEndpoint,
+      });
+      setAvailableModels(models);
+      // If current model is not in list and we have models, select the first one
+      if (models.length > 0 && !models.includes(settings.modelId)) {
+        onUpdateSettings({ modelId: models[0] });
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setModelFetchError(errorMessage);
+      setAvailableModels([]);
+    } finally {
+      setIsFetchingModels(false);
+    }
+  };
+
+  // Fetch models when the panel opens or endpoint changes
+  useEffect(() => {
+    if (isOpen && settings.apiEndpoint) {
+      fetchModels();
+    }
+  }, [isOpen, settings.apiEndpoint]);
 
   if (!isOpen) return null;
 
@@ -76,47 +109,97 @@ export function SettingsPanel({
 
           {/* Model ID */}
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-dark-300">
-              Model ID
-            </label>
-            <input
-              type="text"
-              value={settings.modelId}
-              onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
-              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white placeholder-dark-500 focus:border-primary-500 transition-colors"
-              placeholder="Qwen/Qwen3-VL-30B-A3B-Instruct"
-            />
+            <div className="flex items-center justify-between">
+              <label className="block text-sm font-medium text-dark-300">
+                Model
+              </label>
+              <button
+                onClick={fetchModels}
+                disabled={isFetchingModels}
+                className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3 h-3 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            </div>
+            {availableModels.length > 0 ? (
+              <select
+                value={settings.modelId}
+                onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
+                className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
+              >
+                {availableModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={settings.modelId}
+                onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
+                className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white placeholder-dark-500 focus:border-primary-500 transition-colors"
+                placeholder="Qwen/Qwen3-VL-30B-A3B-Instruct"
+              />
+            )}
+            {modelFetchError && (
+              <p className="text-xs text-red-400">
+                Failed to fetch models: {modelFetchError}
+              </p>
+            )}
+            {availableModels.length === 0 && !modelFetchError && !isFetchingModels && (
+              <p className="text-xs text-dark-500">
+                Enter model ID manually or click Refresh to fetch available models
+              </p>
+            )}
           </div>
 
-          {/* Max Tokens */}
+          {/* System Prompt */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-sm font-medium text-dark-300">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  System Prompt
+                </div>
+              </label>
+              <button
+                onClick={() => onUpdateSettings({ systemPrompt: DEFAULT_SYSTEM_PROMPT })}
+                className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset to Default
+              </button>
+            </div>
+            <textarea
+              value={settings.systemPrompt}
+              onChange={(e) => onUpdateSettings({ systemPrompt: e.target.value })}
+              rows={10}
+              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white placeholder-dark-500 focus:border-primary-500 transition-colors font-mono text-xs resize-y"
+              placeholder="Enter system prompt..."
+            />
+            <p className="text-xs text-dark-500">
+              The system prompt sent to the model. Defines how the AI interprets commands and interacts with the computer.
+            </p>
+          </div>
+
+          {/* Action Delay */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-dark-300">
-              Max Tokens
+              Action Delay (ms)
             </label>
             <input
               type="number"
-              value={settings.maxTokens}
-              onChange={(e) => onUpdateSettings({ maxTokens: parseInt(e.target.value) || 2048 })}
+              min={0}
+              max={10000}
+              step={100}
+              value={settings.actionDelayMs}
+              onChange={(e) => onUpdateSettings({ actionDelayMs: Math.max(0, parseInt(e.target.value) || 0) })}
               className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
             />
-          </div>
-
-          {/* Verbosity */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-dark-300">
-              Response Verbosity
-            </label>
-            <select
-              value={settings.verbosity}
-              onChange={(e) => onUpdateSettings({ verbosity: e.target.value as 'concise' | 'normal' | 'verbose' })}
-              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
-            >
-              <option value="concise">Concise - Just actions, minimal explanation</option>
-              <option value="normal">Normal - Brief explanations</option>
-              <option value="verbose">Verbose - Detailed reasoning</option>
-            </select>
             <p className="text-xs text-dark-500">
-              Controls how much the AI explains its reasoning
+              Delay after each action before taking a screenshot. Increase if the screenshot captures mid-action/loading states.
             </p>
           </div>
 

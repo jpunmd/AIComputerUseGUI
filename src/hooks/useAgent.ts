@@ -4,7 +4,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { Settings, AgentResponse, Message, ScreenshotWithMetadata } from '../types';
 
 const MAX_TURNS = 20; // Maximum number of turns to prevent infinite loops
-const ACTION_DELAY_MS = 1500; // Delay between action and next screenshot (increased for UI to update)
 
 export interface ConfirmationRequest {
   message: string;
@@ -108,8 +107,7 @@ export function useAgent() {
         modelId: settings.modelId,
         displayWidth: imageWidth,
         displayHeight: imageHeight,
-        maxTokens: settings.maxTokens,
-        verbosity: settings.verbosity,
+        systemPrompt: settings.systemPrompt,
         screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
       });
 
@@ -335,7 +333,7 @@ If the goal is achieved, use "done". Otherwise, what's the NEXT action?`;
         actionHistory.push(actionDescription);
 
         // Wait for UI to update after action
-        await delay(ACTION_DELAY_MS);
+        await delay(settings.actionDelayMs);
 
         turn++;
         isFollowUp = true;

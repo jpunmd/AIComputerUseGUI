@@ -44,8 +44,7 @@ async fn process_computer_use(
     model_id: String,
     display_width: u32,
     display_height: u32,
-    max_tokens: u32,
-    verbosity: String,
+    system_prompt: String,
     screenshot_history: Option<Vec<String>>,
 ) -> Result<AgentResponse, String> {
     api::call_computer_use_api(
@@ -55,8 +54,7 @@ async fn process_computer_use(
         &query,
         display_width,
         display_height,
-        max_tokens,
-        &verbosity,
+        &system_prompt,
         screenshot_history,
     )
     .await
@@ -87,6 +85,14 @@ async fn test_api_connection(api_endpoint: String, model_id: String) -> Result<b
         .map_err(|e| e.to_string())
 }
 
+/// Fetch available models from the API endpoint
+#[tauri::command]
+async fn fetch_available_models(api_endpoint: String) -> Result<Vec<String>, String> {
+    api::fetch_models(&api_endpoint)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Get screen dimensions
 #[tauri::command]
 async fn get_screen_size() -> Result<(u32, u32), String> {
@@ -103,6 +109,7 @@ pub fn run() {
             process_computer_use,
             execute_action,
             test_api_connection,
+            fetch_available_models,
             get_screen_size,
         ])
         .run(tauri::generate_context!())

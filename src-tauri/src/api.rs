@@ -1,5 +1,6 @@
 use crate::types::*;
 use reqwest::Client;
+use serde::Deserialize;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -10,69 +11,6 @@ pub enum ApiError {
     ParseError(String),
     #[error("API returned an error: {0}")]
     ApiResponseError(String),
-}
-
-/// The computer use function definition for the system prompt
-const COMPUTER_USE_FUNCTION: &str = r#"
-
-# Tools
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm"], "type": "string"}, "coordinate": {"description": "The x,y coordinate in 0-1000 normalized space. (0,0) is top-left, (1000,1000) is bottom-right.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
-</tools>
-
-# IMPORTANT: Coordinate System
-- Use NORMALIZED coordinates from 0 to 1000
-- (0, 0) = top-left corner of the screen
-- (1000, 1000) = bottom-right corner of the screen
-- (500, 500) = center of the screen
-- Example: An icon at the left edge, about 1/4 down from top = approximately (50, 250)
-- Example: A button in the center-right area = approximately (750, 500)
-
-Actions: click, double_click (open items), right_click, type, key, scroll, done (task complete), confirm (ask user before risky action).
-
-For each action, return JSON in <tool_call></tool_call> tags:
-<tool_call>
-{"name": "computer", "arguments": {"action": "...", ...}}
-</tool_call>
-"#;
-
-/// Verbosity-specific instructions
-fn get_verbosity_instructions(verbosity: &str) -> &'static str {
-    match verbosity {
-        "concise" => r#"
-IMPORTANT: Be extremely concise. Output ONLY the tool_call with no explanation. When the task is complete, you MUST still output a tool_call with action "done"."#,
-        "verbose" => r#"
-Explain your reasoning before each action. You MUST always output a tool_call. When the task is complete, output a tool_call with action "done"."#,
-        _ => r#"
-Be brief. You MUST always output a tool_call. When the task is complete, output a tool_call with action "done"."#,
-    }
-}
-
-/// Build the system prompt for computer use
-fn build_system_prompt(verbosity: &str) -> String {
-    let verbosity_instructions = get_verbosity_instructions(verbosity);
-    format!(r#"You are a computer control assistant.{}
-
-# Safety Guidelines - CRITICAL
-- ONLY perform actions specifically requested by the user
-- Be PRECISE: if asked to delete "folder X", delete ONLY folder X, not other items
-- NEVER select multiple items unless explicitly asked (avoid Ctrl+A, Shift+Click on unrelated items)
-- For destructive actions (delete, format, uninstall, close without saving), use "confirm" action first
-- The "confirm" action pauses and asks the user for approval before proceeding
-- When in doubt about scope, use "confirm" to clarify with the user
-- Do not perform actions that affect files/folders/applications the user did not mention
-
-# Multi-Turn Instructions
-- You will receive a list of actions already completed and a screenshot of the CURRENT state
-- The screenshot shows what happened AFTER all listed actions were executed
-- TRUST the action history - if an action is listed as completed, it was done
-- Do NOT repeat actions that are already in the history
-- Analyze the screenshot to verify success, then decide the NEXT action
-- If the goal appears complete in the screenshot, use "done"
-- For scroll: always include direction ("up", "down", "left", "right")
-{}"#, COMPUTER_USE_FUNCTION, verbosity_instructions)
 }
 
 /// Maximum number of recent screenshots to include for context
@@ -87,12 +25,10 @@ pub async fn call_computer_use_api(
     query: &str,
     display_width: u32,
     display_height: u32,
-    max_tokens: u32,
-    verbosity: &str,
+    system_prompt: &str,
     screenshot_history: Option<Vec<String>>,
 ) -> Result<AgentResponse, ApiError> {
     println!("=== API Call Debug ===");
-    println!("Verbosity: {}", verbosity);
     println!("Query: {}", query);
     println!("Screenshot length: {} bytes", screenshot_base64.len());
     println!("Screen size: {}x{}", display_width, display_height);
@@ -100,8 +36,7 @@ pub async fn call_computer_use_api(
     
     let client = Client::new();
     
-    let system_prompt = build_system_prompt(verbosity);
-    println!("System prompt: {}", system_prompt);
+    println!("System prompt length: {} chars", system_prompt.len());
     
     // Build user content - only the current screenshot
     // Multiple images can confuse some models about which one to act on
@@ -155,7 +90,7 @@ pub async fn call_computer_use_api(
             ChatMessage {
                 role: "system".to_string(),
                 content: vec![ContentPart::Text {
-                    text: system_prompt,
+                    text: system_prompt.to_string(),
                 }],
             },
             ChatMessage {
@@ -163,7 +98,7 @@ pub async fn call_computer_use_api(
                 content: user_content,
             },
         ],
-        max_tokens: Some(max_tokens),
+        max_tokens: None, // Let the server decide max tokens
     };
     
     // Make the API request
@@ -261,6 +196,41 @@ fn parse_tool_call(response: &str) -> Result<ActionResult, ApiError> {
         }
     }
     
+    // Fallback: try to find "tool_call" followed by JSON (without XML tags)
+    // Pattern: tool_call{"name": "computer", ...} or tool_call\n{"name": "computer", ...}
+    if let Some(start) = response.find("tool_call") {
+        let after_keyword = &response[start + 9..]; // Skip "tool_call"
+        let trimmed = after_keyword.trim_start();
+        if trimmed.starts_with('{') {
+            // Find the matching closing brace
+            if let Some(json_start) = trimmed.find('{') {
+                let json_part = &trimmed[json_start..];
+                // Try to find the end of the JSON object by matching braces
+                let mut brace_count = 0;
+                let mut json_end = 0;
+                for (i, c) in json_part.chars().enumerate() {
+                    match c {
+                        '{' => brace_count += 1,
+                        '}' => {
+                            brace_count -= 1;
+                            if brace_count == 0 {
+                                json_end = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if json_end > 0 {
+                    let json_str = &json_part[..json_end];
+                    if let Ok(tool_call) = serde_json::from_str::<ToolCall>(json_str) {
+                        return Ok(ActionResult::from(tool_call));
+                    }
+                }
+            }
+        }
+    }
+    
     // Fallback: try to parse the entire response as ToolCall
     if let Ok(tool_call) = serde_json::from_str::<ToolCall>(response) {
         return Ok(ActionResult::from(tool_call));
@@ -324,4 +294,40 @@ pub async fn test_connection(api_endpoint: &str, model_id: &str) -> Result<bool,
         .await?;
     
     Ok(response.status().is_success())
+}
+
+/// Response from the /models endpoint
+#[derive(Debug, Deserialize)]
+pub struct ModelsResponse {
+    pub data: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+}
+
+/// Fetch available models from the API endpoint
+pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
+    let client = Client::new();
+    
+    let endpoint = format!("{}/models", api_endpoint.trim_end_matches('/'));
+    let response = client
+        .get(&endpoint)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?;
+    
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(ApiError::ApiResponseError(error_text));
+    }
+    
+    let models_response: ModelsResponse = response
+        .json()
+        .await
+        .map_err(|e| ApiError::ParseError(format!("Failed to parse models response: {}", e)))?;
+    
+    let model_ids: Vec<String> = models_response.data.into_iter().map(|m| m.id).collect();
+    Ok(model_ids)
 }

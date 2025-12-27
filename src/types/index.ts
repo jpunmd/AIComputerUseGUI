@@ -3,8 +3,8 @@ export interface Settings {
   modelId: string;
   displayWidth: number;
   displayHeight: number;
-  maxTokens: number;
-  verbosity: 'concise' | 'normal' | 'verbose';
+  systemPrompt: string;
+  actionDelayMs: number; // Delay after action before next screenshot
 }
 
 export interface Coordinate {

@@ -8,7 +8,6 @@ pub struct Settings {
     pub model_id: String,
     pub display_width: u32,
     pub display_height: u32,
-    pub max_tokens: u32,
 }
 
 #[allow(dead_code)]
@@ -19,7 +18,6 @@ impl Default for Settings {
             model_id: "Qwen/Qwen3-VL-30B-A3B-Instruct".to_string(),
             display_width: 1000,
             display_height: 1000,
-            max_tokens: 2048,
         }
     }
 }
