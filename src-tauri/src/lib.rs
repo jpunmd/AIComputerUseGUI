@@ -18,14 +18,14 @@ pub struct ScreenshotWithMetadata {
 
 /// Capture a screenshot and return it as base64
 #[tauri::command]
-async fn capture_screenshot() -> Result<String, String> {
-    screenshot::capture_screen().map_err(|e| e.to_string())
+async fn capture_screenshot(max_dimension: Option<u32>) -> Result<String, String> {
+    screenshot::capture_screen(max_dimension).map_err(|e| e.to_string())
 }
 
 /// Capture a screenshot with metadata (dimensions)
 #[tauri::command]
-async fn capture_screenshot_with_metadata() -> Result<ScreenshotWithMetadata, String> {
-    let result = screenshot::capture_screen_with_metadata().map_err(|e| e.to_string())?;
+async fn capture_screenshot_with_metadata(max_dimension: Option<u32>) -> Result<ScreenshotWithMetadata, String> {
+    let result = screenshot::capture_screen_with_metadata(max_dimension).map_err(|e| e.to_string())?;
     Ok(ScreenshotWithMetadata {
         base64_image: result.base64_image,
         image_width: result.image_width,

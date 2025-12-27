@@ -48,6 +48,7 @@ const DEFAULT_SETTINGS: Settings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   actionDelayMs: 1000, // Delay after action before next screenshot (ms)
   maxTurns: 20, // Maximum number of turns before stopping
+  screenshotMaxDimension: 1280, // Max screenshot dimension (lower = fewer tokens, less detail)
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';

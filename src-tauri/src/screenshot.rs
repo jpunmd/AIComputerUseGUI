@@ -5,10 +5,9 @@ use image::{ImageEncoder, RgbaImage, imageops::FilterType};
 use screenshots::Screen;
 use thiserror::Error;
 
-/// Maximum dimension (width or height) for screenshots sent to the model
+/// Default maximum dimension (width or height) for screenshots sent to the model
 /// This helps reduce token usage while maintaining enough detail for the model
-/// Set to 1920 to support 1080p scaling (1920x1080) for better model performance on high-res screens
-const MAX_SCREENSHOT_DIMENSION: u32 = 1920;
+const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1280;
 
 #[derive(Error, Debug)]
 pub enum ScreenshotError {
@@ -21,24 +20,24 @@ pub enum ScreenshotError {
 }
 
 /// Calculate the resized dimensions for a given image size
-fn calculate_resized_dimensions(width: u32, height: u32) -> (u32, u32) {
-    if width <= MAX_SCREENSHOT_DIMENSION && height <= MAX_SCREENSHOT_DIMENSION {
+fn calculate_resized_dimensions(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
+    if width <= max_dimension && height <= max_dimension {
         return (width, height);
     }
     
     if width > height {
-        let ratio = MAX_SCREENSHOT_DIMENSION as f64 / width as f64;
-        (MAX_SCREENSHOT_DIMENSION, (height as f64 * ratio) as u32)
+        let ratio = max_dimension as f64 / width as f64;
+        (max_dimension, (height as f64 * ratio) as u32)
     } else {
-        let ratio = MAX_SCREENSHOT_DIMENSION as f64 / height as f64;
-        ((width as f64 * ratio) as u32, MAX_SCREENSHOT_DIMENSION)
+        let ratio = max_dimension as f64 / height as f64;
+        ((width as f64 * ratio) as u32, max_dimension)
     }
 }
 
-/// Resize an image to fit within MAX_SCREENSHOT_DIMENSION while maintaining aspect ratio
-fn resize_image(img: RgbaImage) -> RgbaImage {
+/// Resize an image to fit within max_dimension while maintaining aspect ratio
+fn resize_image(img: RgbaImage, max_dimension: u32) -> RgbaImage {
     let (width, height) = (img.width(), img.height());
-    let (new_width, new_height) = calculate_resized_dimensions(width, height);
+    let (new_width, new_height) = calculate_resized_dimensions(width, height, max_dimension);
     
     // Check if resizing is needed
     if new_width == width && new_height == height {
@@ -89,7 +88,10 @@ pub struct ScreenshotResult {
 }
 
 /// Capture a screenshot of the primary screen and return it with metadata
-pub fn capture_screen_with_metadata() -> Result<ScreenshotResult, ScreenshotError> {
+/// max_dimension: Optional maximum dimension for resizing. If None, uses DEFAULT_MAX_SCREENSHOT_DIMENSION.
+pub fn capture_screen_with_metadata(max_dimension: Option<u32>) -> Result<ScreenshotResult, ScreenshotError> {
+    let max_dim = max_dimension.unwrap_or(DEFAULT_MAX_SCREENSHOT_DIMENSION);
+    
     // Get all screens
     let screens = Screen::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
     
@@ -121,7 +123,7 @@ pub fn capture_screen_with_metadata() -> Result<ScreenshotResult, ScreenshotErro
     }
 
     // Resize the image to reduce token usage
-    let resized = resize_image(rgba_image);
+    let resized = resize_image(rgba_image, max_dim);
     let image_width = resized.width();
     let image_height = resized.height();
     
@@ -154,8 +156,8 @@ pub fn capture_screen_with_metadata() -> Result<ScreenshotResult, ScreenshotErro
 
 /// Capture a screenshot of the primary screen and return it as a base64-encoded PNG
 /// (Legacy function for compatibility)
-pub fn capture_screen() -> Result<String, ScreenshotError> {
-    capture_screen_with_metadata().map(|r| r.base64_image)
+pub fn capture_screen(max_dimension: Option<u32>) -> Result<String, ScreenshotError> {
+    capture_screen_with_metadata(max_dimension).map(|r| r.base64_image)
 }
 
 /// Get screen dimensions (returns actual screen dimensions, not resized)

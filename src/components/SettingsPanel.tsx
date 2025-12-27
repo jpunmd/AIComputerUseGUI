@@ -222,6 +222,28 @@ export function SettingsPanel({
             </p>
           </div>
 
+          {/* Screenshot Resolution */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-dark-300">
+              Screenshot Max Dimension
+            </label>
+            <select
+              value={settings.screenshotMaxDimension}
+              onChange={(e) => onUpdateSettings({ screenshotMaxDimension: parseInt(e.target.value) })}
+              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
+            >
+              <option value={768}>768px (Low - fastest, fewer tokens)</option>
+              <option value={1024}>1024px (Medium-Low)</option>
+              <option value={1280}>1280px (Medium - recommended)</option>
+              <option value={1920}>1920px (High - 1080p equivalent)</option>
+              <option value={2560}>2560px (Very High - 1440p equivalent)</option>
+              <option value={3840}>3840px (Ultra - 4K, most tokens)</option>
+            </select>
+            <p className="text-xs text-dark-500">
+              Maximum width/height for screenshots sent to the model. Lower values use fewer tokens but may lose detail.
+            </p>
+          </div>
+
           {/* Test Connection */}
           <div className="pt-2">
             <button

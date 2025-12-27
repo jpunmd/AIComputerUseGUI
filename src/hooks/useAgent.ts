@@ -31,9 +31,11 @@ export function useAgent() {
   const screenshotHistoryRef = useRef<string[]>([]); // Track screenshots for current task
 
   // Capture screenshot with metadata (dimensions)
-  const captureScreenshotWithMetadata = useCallback(async (): Promise<ScreenshotCapture | null> => {
+  const captureScreenshotWithMetadata = useCallback(async (maxDimension?: number): Promise<ScreenshotCapture | null> => {
     try {
-      const result = await invoke<ScreenshotWithMetadata>('capture_screenshot_with_metadata');
+      const result = await invoke<ScreenshotWithMetadata>('capture_screenshot_with_metadata', {
+        maxDimension: maxDimension ?? null
+      });
       // Use flushSync to ensure the screenshot is rendered immediately
       flushSync(() => {
         setCurrentScreenshot(result.base64_image);
@@ -52,9 +54,11 @@ export function useAgent() {
     }
   }, []);
 
-  const captureScreenshot = useCallback(async (): Promise<string | null> => {
+  const captureScreenshot = useCallback(async (maxDimension?: number): Promise<string | null> => {
     try {
-      const screenshot = await invoke<string>('capture_screenshot');
+      const screenshot = await invoke<string>('capture_screenshot', {
+        maxDimension: maxDimension ?? null
+      });
       // Use flushSync to ensure the screenshot is rendered immediately
       flushSync(() => {
         setCurrentScreenshot(screenshot);
@@ -137,7 +141,7 @@ export function useAgent() {
     setError(null);
 
     try {
-      const capture = await captureScreenshotWithMetadata();
+      const capture = await captureScreenshotWithMetadata(settings.screenshotMaxDimension);
       if (!capture) {
         throw new Error('Failed to capture screenshot');
       }
@@ -206,7 +210,7 @@ export function useAgent() {
         }
 
         // Capture fresh screenshot with metadata (includes image dimensions)
-        const capture = await captureScreenshotWithMetadata();
+        const capture = await captureScreenshotWithMetadata(settings.screenshotMaxDimension);
         if (!capture) {
           throw new Error('Failed to capture screenshot');
         }

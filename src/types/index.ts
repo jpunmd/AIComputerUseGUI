@@ -6,6 +6,7 @@ export interface Settings {
   systemPrompt: string;
   actionDelayMs: number; // Delay after action before next screenshot
   maxTurns: number; // Maximum number of turns before stopping
+  screenshotMaxDimension: number; // Max width/height for screenshots sent to API
 }
 
 export interface Coordinate {
