@@ -222,6 +222,30 @@ export function SettingsPanel({
             </p>
           </div>
 
+          {/* Thinking Mode */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-sm font-medium text-dark-300">
+                Thinking Mode
+              </label>
+              <p className="text-xs text-dark-500">
+                Enable reasoning/thinking for supported models (Qwen3, DeepSeek-R1, etc.)
+              </p>
+            </div>
+            <button
+              onClick={() => onUpdateSettings({ enableThinking: !settings.enableThinking })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                settings.enableThinking ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.enableThinking ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Screenshot Resolution */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-dark-300">

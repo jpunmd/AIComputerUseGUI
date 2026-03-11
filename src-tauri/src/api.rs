@@ -27,6 +27,7 @@ pub async fn call_computer_use_api(
     display_height: u32,
     system_prompt: &str,
     screenshot_history: Option<Vec<String>>,
+    enable_thinking: bool,
 ) -> Result<AgentResponse, ApiError> {
     println!("=== API Call Debug ===");
     println!("Query: {}", query);
@@ -99,6 +100,11 @@ pub async fn call_computer_use_api(
             },
         ],
         max_tokens: None, // Let the server decide max tokens
+        chat_template_kwargs: if enable_thinking {
+            Some(ChatTemplateKwargs { enable_thinking: true })
+        } else {
+            None
+        },
     };
     
     // Make the API request
@@ -149,17 +155,26 @@ pub async fn call_computer_use_api(
         }
     });
     
-    // Extract thinking/reasoning from the response (text before the tool_call)
-    let thinking = if let Some(tool_call_start) = output_text.find("<tool_call>") {
-        let before_tool_call = output_text[..tool_call_start].trim();
-        if !before_tool_call.is_empty() {
-            Some(before_tool_call.to_string())
+    // Extract thinking/reasoning from the response
+    // Priority: reasoning_content field (thinking models) > text before <tool_call>
+    let reasoning_content = chat_response
+        .choices
+        .first()
+        .and_then(|c| c.message.reasoning_content.clone())
+        .filter(|s| !s.trim().is_empty());
+    
+    let thinking = reasoning_content.or_else(|| {
+        if let Some(tool_call_start) = output_text.find("<tool_call>") {
+            let before_tool_call = output_text[..tool_call_start].trim();
+            if !before_tool_call.is_empty() {
+                Some(before_tool_call.to_string())
+            } else {
+                None
+            }
         } else {
             None
         }
-    } else {
-        None
-    };
+    });
     
     // Check if the action is "done" to signal task completion
     let is_done = action.action == "done";

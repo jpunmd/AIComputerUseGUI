@@ -111,6 +111,7 @@ export function useAgent() {
         displayHeight: imageHeight,
         systemPrompt: settings.systemPrompt,
         screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
+        enableThinking: settings.enableThinking,
       });
 
       // Add assistant message - include screenshot so user can see what model saw

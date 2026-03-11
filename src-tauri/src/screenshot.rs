@@ -72,8 +72,8 @@ pub fn capture_screen_with_metadata(max_dimension: Option<u32>) -> Result<Screen
     
     let actual_width = screen.display_info.width;
     let actual_height = screen.display_info.height;
-    let screen_x = screen.display_info.x;
-    let screen_y = screen.display_info.y;
+    let _screen_x = screen.display_info.x;
+    let _screen_y = screen.display_info.y;
     
     // Capture the screenshot
     let image = screen

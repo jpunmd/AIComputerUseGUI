@@ -7,6 +7,7 @@ export interface Settings {
   actionDelayMs: number; // Delay after action before next screenshot
   maxTurns: number; // Maximum number of turns before stopping
   screenshotMaxDimension: number; // Max width/height for screenshots sent to API
+  enableThinking: boolean; // Enable thinking/reasoning mode for supported models
 }
 
 export interface Coordinate {

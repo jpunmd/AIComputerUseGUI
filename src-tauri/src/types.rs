@@ -144,6 +144,12 @@ pub struct ImageUrl {
     pub url: String,
 }
 
+/// Extra kwargs for chat template (e.g., enable thinking mode)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatTemplateKwargs {
+    pub enable_thinking: bool,
+}
+
 /// OpenAI-compatible chat request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -151,6 +157,8 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<ChatTemplateKwargs>,
 }
 
 /// OpenAI-compatible chat response
@@ -169,4 +177,7 @@ pub struct ChatChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageResponse {
     pub content: String,
+    /// Reasoning/thinking content from thinking models (e.g. Qwen3, DeepSeek-R1)
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
