@@ -273,6 +273,8 @@ fn execute_key_sequence(enigo: &mut Enigo, key_str: &str) -> Result<(), ActionEr
 
 /// Parse a key string to an enigo Key
 fn parse_key(key_str: &str) -> Result<Key, ActionError> {
+    // Strip surrounding quotes that the model may include (e.g. "enter" -> enter)
+    let key_str = key_str.trim().trim_matches('"').trim_matches('\'');
     let key = match key_str.to_lowercase().as_str() {
         "enter" | "return" => Key::Return,
         "tab" => Key::Tab,

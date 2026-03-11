@@ -413,7 +413,6 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
     try {
       const result = await invoke<boolean>('test_api_connection', {
         apiEndpoint: settings.apiEndpoint,
-        modelId: settings.modelId,
       });
       return result;
     } catch (err) {

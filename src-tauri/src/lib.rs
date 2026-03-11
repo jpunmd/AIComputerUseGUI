@@ -79,8 +79,8 @@ async fn execute_action(action: String) -> Result<(), String> {
 
 /// Test API connection
 #[tauri::command]
-async fn test_api_connection(api_endpoint: String, model_id: String) -> Result<bool, String> {
-    api::test_connection(&api_endpoint, &model_id)
+async fn test_api_connection(api_endpoint: String) -> Result<bool, String> {
+    api::test_connection(&api_endpoint)
         .await
         .map_err(|e| e.to_string())
 }

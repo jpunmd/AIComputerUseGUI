@@ -282,24 +282,12 @@ fn parse_tool_call(response: &str) -> Result<ActionResult, ApiError> {
 }
 
 /// Test the API connection
-pub async fn test_connection(api_endpoint: &str, model_id: &str) -> Result<bool, ApiError> {
+pub async fn test_connection(api_endpoint: &str) -> Result<bool, ApiError> {
     let client = Client::new();
     
-    let request = ChatRequest {
-        model: model_id.to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: vec![ContentPart::Text {
-                text: "Hello".to_string(),
-            }],
-        }],
-        max_tokens: Some(10),
-    };
-    
-    let endpoint = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
+    let endpoint = format!("{}/models", api_endpoint.trim_end_matches('/'));
     let response = client
-        .post(&endpoint)
-        .json(&request)
+        .get(&endpoint)
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await?;
