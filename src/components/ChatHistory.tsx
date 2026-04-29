@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Message } from '../types';
-import { Bot, User, MousePointer, Keyboard, Move, Info, CheckCircle, AlertCircle, StopCircle, X, ZoomIn } from 'lucide-react';
+import { Bot, User, MousePointer, Keyboard, Move, Info, CheckCircle, AlertCircle, StopCircle, X, ZoomIn, ChevronRight, Brain } from 'lucide-react';
 
 interface ChatHistoryProps {
   messages: Message[];
@@ -9,6 +9,11 @@ interface ChatHistoryProps {
 export function ChatHistory({ messages }: ChatHistoryProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedScreenshot, setExpandedScreenshot] = useState<string | null>(null);
+  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
+
+  const toggleThinking = (id: string) => {
+    setExpandedThinking(prev => ({ ...prev, [id]: !prev[id] }));
+  };
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -141,6 +146,28 @@ export function ChatHistory({ messages }: ChatHistoryProps) {
                     </span>
                   </div>
                 )}
+
+                {/* Thinking block - collapsible, shown before action */}
+                {message.role === 'assistant' && message.thinking && (
+                  <div className="mb-2 w-full max-w-full">
+                    <button
+                      onClick={() => toggleThinking(message.id)}
+                      className="flex items-center gap-1.5 px-2.5 py-1 bg-dark-800/50 hover:bg-dark-800 border border-dark-700 rounded-lg text-xs text-dark-300 hover:text-dark-100 transition-colors"
+                    >
+                      <ChevronRight
+                        className={`w-3.5 h-3.5 transition-transform ${expandedThinking[message.id] ? 'rotate-90' : ''}`}
+                      />
+                      <Brain className="w-3.5 h-3.5 text-primary-400" />
+                      <span>Thinking</span>
+                    </button>
+                    {expandedThinking[message.id] && (
+                      <div className="mt-1.5 px-3 py-2 bg-dark-900/70 border border-dark-700 rounded-lg text-xs text-dark-300 whitespace-pre-wrap font-mono leading-relaxed max-h-96 overflow-y-auto">
+                        {message.thinking}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div
                   className={`inline-block px-4 py-2 rounded-2xl ${
                     message.role === 'user'

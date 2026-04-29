@@ -28,6 +28,7 @@ pub async fn call_computer_use_api(
     system_prompt: &str,
     screenshot_history: Option<Vec<String>>,
     enable_thinking: bool,
+    prior_turns: Option<Vec<PriorTurn>>,
 ) -> Result<AgentResponse, ApiError> {
     println!("=== API Call Debug ===");
     println!("Query: {}", query);
@@ -84,24 +85,61 @@ pub async fn call_computer_use_api(
         text: query.to_string(),
     });
     
+    // Build conversation: system → (prior user/assistant turns) → current user.
+    // Prior turns are text-only (no screenshots) to keep token cost down — the
+    // current screenshot is the source of truth, prior thinking + actions give
+    // continuity. When preserve_thinking is enabled, prior assistant content is
+    // wrapped with <think>...</think> so the Qwen3-VL chat template re-includes
+    // the reasoning instead of stripping it.
+    let mut messages: Vec<ChatMessage> = Vec::new();
+    messages.push(ChatMessage {
+        role: "system".to_string(),
+        content: vec![ContentPart::Text {
+            text: system_prompt.to_string(),
+        }],
+    });
+
+    if let Some(turns) = &prior_turns {
+        for turn in turns {
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: vec![ContentPart::Text {
+                    text: turn.user_query.clone(),
+                }],
+            });
+
+            let assistant_text = match (&turn.assistant_thinking, enable_thinking) {
+                (Some(thinking), true) if !thinking.trim().is_empty() => {
+                    format!("<think>\n{}\n</think>\n\n{}", thinking.trim(), turn.assistant_content)
+                }
+                _ => turn.assistant_content.clone(),
+            };
+            messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: vec![ContentPart::Text {
+                    text: assistant_text,
+                }],
+            });
+        }
+    }
+
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: user_content,
+    });
+
     // Build the chat request
     let request = ChatRequest {
         model: model_id.to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: vec![ContentPart::Text {
-                    text: system_prompt.to_string(),
-                }],
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_content,
-            },
-        ],
+        messages,
         max_tokens: None, // Let the server decide max tokens
         chat_template_kwargs: if enable_thinking {
-            Some(ChatTemplateKwargs { enable_thinking: true })
+            Some(ChatTemplateKwargs {
+                enable_thinking: Some(true),
+                // Auto-enable preserve_thinking whenever thinking is on so prior
+                // <think> blocks are kept in the rendered conversation.
+                preserve_thinking: Some(true),
+            })
         } else {
             None
         },
@@ -121,16 +159,22 @@ pub async fn call_computer_use_api(
     }
     
     let chat_response: ChatResponse = response.json().await?;
-    
+
     // Parse the response
-    let output_text = chat_response
+    let raw_output_text = chat_response
         .choices
         .first()
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
-    
-    println!("API Response output_text: {}", output_text);
-    
+
+    println!("API Response raw output_text: {}", raw_output_text);
+
+    // llama.cpp (and some other servers) leave <think>...</think> tags inline in
+    // the content rather than splitting them into reasoning_content. Strip them
+    // out so the tool_call parser doesn't choke and so we can surface the
+    // reasoning separately.
+    let (output_text, inline_thinking) = extract_think_tags(&raw_output_text);
+
     // Extract the action from the tool_call
     let action = parse_tool_call(&output_text)?;
     
@@ -155,15 +199,18 @@ pub async fn call_computer_use_api(
         }
     });
     
-    // Extract thinking/reasoning from the response
-    // Priority: reasoning_content field (thinking models) > text before <tool_call>
+    // Extract thinking/reasoning from the response.
+    // Priority:
+    //   1. reasoning_content field (vLLM, llama.cpp with reasoning_format=deepseek)
+    //   2. inline <think>...</think> tags (llama.cpp with reasoning_format=none)
+    //   3. text before <tool_call> as a last-resort fallback
     let reasoning_content = chat_response
         .choices
         .first()
         .and_then(|c| c.message.reasoning_content.clone())
         .filter(|s| !s.trim().is_empty());
-    
-    let thinking = reasoning_content.or_else(|| {
+
+    let thinking = reasoning_content.or(inline_thinking).or_else(|| {
         if let Some(tool_call_start) = output_text.find("<tool_call>") {
             let before_tool_call = output_text[..tool_call_start].trim();
             if !before_tool_call.is_empty() {
@@ -194,21 +241,70 @@ pub async fn call_computer_use_api(
     Ok(response)
 }
 
+/// Extract <think>...</think> blocks from the model output.
+/// Returns (text_with_think_blocks_removed, joined_thinking_content).
+/// Handles multiple think blocks and an unclosed final block (streaming-style).
+fn extract_think_tags(text: &str) -> (String, Option<String>) {
+    if !text.contains("<think>") {
+        return (text.to_string(), None);
+    }
+
+    let mut cleaned = String::with_capacity(text.len());
+    let mut thoughts: Vec<String> = Vec::new();
+    let mut rest = text;
+
+    while let Some(open_idx) = rest.find("<think>") {
+        cleaned.push_str(&rest[..open_idx]);
+        let after_open = &rest[open_idx + "<think>".len()..];
+        if let Some(close_rel) = after_open.find("</think>") {
+            let thought = after_open[..close_rel].trim();
+            if !thought.is_empty() {
+                thoughts.push(thought.to_string());
+            }
+            rest = &after_open[close_rel + "</think>".len()..];
+        } else {
+            // Unclosed <think> — treat the remainder as thinking content
+            let thought = after_open.trim();
+            if !thought.is_empty() {
+                thoughts.push(thought.to_string());
+            }
+            rest = "";
+            break;
+        }
+    }
+    cleaned.push_str(rest);
+
+    let thinking = if thoughts.is_empty() {
+        None
+    } else {
+        Some(thoughts.join("\n\n"))
+    };
+    (cleaned.trim().to_string(), thinking)
+}
+
 /// Parse the tool_call from the model's response
 /// The model returns: <tool_call>{"name": "computer", "arguments": {"action": "click", "coordinate": [x, y]}}</tool_call>
 fn parse_tool_call(response: &str) -> Result<ActionResult, ApiError> {
-    // Try to find <tool_call> tags first
-    if let Some(start) = response.find("<tool_call>") {
-        if let Some(end) = response.find("</tool_call>") {
-            let json_str = response[start + 11..end].trim();
-            
-            // Parse as ToolCall first (the model's format)
-            let tool_call: ToolCall = serde_json::from_str(json_str)
-                .map_err(|e| ApiError::ParseError(format!("Failed to parse tool_call JSON: {}. JSON was: {}", e, json_str)))?;
-            
-            // Convert to ActionResult
-            return Ok(ActionResult::from(tool_call));
-        }
+    // Try to find <tool_call> tags first.
+    // Use rfind for the opening tag so duplicated/nested <tool_call> openings
+    // (the model sometimes echoes the example tag from the system prompt) don't
+    // get included in the JSON slice.
+    if let Some(start) = response.rfind("<tool_call>") {
+        let after_open = start + "<tool_call>".len();
+        let end = response[after_open..]
+            .find("</tool_call>")
+            .map(|e| after_open + e)
+            .unwrap_or(response.len());
+        let json_str = response[after_open..end]
+            .trim()
+            .trim_start_matches("<tool_call>")
+            .trim_end_matches("</tool_call>")
+            .trim();
+
+        let tool_call: ToolCall = serde_json::from_str(json_str)
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse tool_call JSON: {}. JSON was: {}", e, json_str)))?;
+
+        return Ok(ActionResult::from(tool_call));
     }
     
     // Fallback: try to find "tool_call" followed by JSON (without XML tags)

@@ -18,6 +18,14 @@ interface ScreenshotCapture {
   screenHeight: number;
 }
 
+// A previously executed turn — sent back to the backend so the model gets
+// real conversation continuity (and prior thinking when preserve_thinking is on)
+interface PriorTurn {
+  user_query: string;
+  assistant_content: string;
+  assistant_thinking?: string;
+}
+
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentScreenshot, setCurrentScreenshot] = useState<string | null>(null);
@@ -29,6 +37,7 @@ export function useAgent() {
   const stopRequestedRef = useRef(false);
   const confirmationResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
   const screenshotHistoryRef = useRef<string[]>([]); // Track screenshots for current task
+  const priorTurnsRef = useRef<PriorTurn[]>([]); // Conversation history for thinking preservation
 
   // Capture screenshot with metadata (dimensions)
   const captureScreenshotWithMetadata = useCallback(async (maxDimension?: number): Promise<ScreenshotCapture | null> => {
@@ -85,7 +94,8 @@ export function useAgent() {
     imageHeight: number,
     isFollowUp: boolean = false,
     stepNumber?: number,
-    screenshotHistory?: string[]
+    screenshotHistory?: string[],
+    priorTurns?: PriorTurn[]
   ): Promise<AgentResponse | null> => {
     try {
       // Add user message only for initial query
@@ -112,6 +122,7 @@ export function useAgent() {
         systemPrompt: settings.systemPrompt,
         screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
         enableThinking: settings.enableThinking,
+        priorTurns: priorTurns && priorTurns.length > 0 ? priorTurns : null,
       });
 
       // Add assistant message - include screenshot so user can see what model saw
@@ -123,6 +134,7 @@ export function useAgent() {
         action: response.action,
         screenshot, // Always include screenshot so user can see what model analyzed
         stepNumber, // Track which step this is in multi-turn
+        thinking: response.thinking,
       };
       setMessages(prev => [...prev, assistantMessage]);
 
@@ -194,6 +206,7 @@ export function useAgent() {
     setCurrentTurn(0);
     stopRequestedRef.current = false;
     screenshotHistoryRef.current = []; // Clear screenshot history for new task
+    priorTurnsRef.current = []; // Clear conversation history for new task
 
     try {
       let turn = 0;
@@ -237,22 +250,31 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
         // Process single turn with screenshot history for context
         // Pass IMAGE dimensions so model's coordinates match the image it sees
         const response = await processSingleTurn(
-          currentQuery, 
-          settings, 
-          capture.base64, 
-          capture.imageWidth, 
-          capture.imageHeight, 
+          currentQuery,
+          settings,
+          capture.base64,
+          capture.imageWidth,
+          capture.imageHeight,
           isFollowUp,
           turn + 1, // Step number for display
-          screenshotHistoryRef.current // Pass screenshot history for context
+          screenshotHistoryRef.current, // Pass screenshot history for context
+          priorTurnsRef.current // Conversation history (with thinking) for continuity
         );
-        
+
         // Add current screenshot to history for next turn
         screenshotHistoryRef.current.push(capture.base64);
 
         if (!response?.success) {
           throw new Error(response?.error || 'Failed to get response');
         }
+
+        // Record this turn so the next call gets full conversation history
+        // (including thinking, which Qwen3-VL preserves via preserve_thinking)
+        priorTurnsRef.current.push({
+          user_query: currentQuery,
+          assistant_content: response.output_text,
+          assistant_thinking: response.thinking,
+        });
 
         // Check if done
         if (response.is_done || response.action.action === 'done') {
@@ -402,6 +424,7 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
     setCurrentScreenshot(null);
     setCurrentTurn(0);
     screenshotHistoryRef.current = []; // Clear screenshot history
+    priorTurnsRef.current = []; // Clear conversation history
   }, []);
 
   const testConnection = useCallback(async (settings: Settings): Promise<boolean> => {

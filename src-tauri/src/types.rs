@@ -147,7 +147,23 @@ pub struct ImageUrl {
 /// Extra kwargs for chat template (e.g., enable thinking mode)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTemplateKwargs {
-    pub enable_thinking: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    /// Preserve thinking from prior assistant turns when reconstructing the
+    /// chat history. New Qwen3-VL chat-template kwarg.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preserve_thinking: Option<bool>,
+}
+
+/// A previously executed turn used to rebuild conversation history so the
+/// model has continuity (and access to prior thinking when preserve_thinking
+/// is enabled).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriorTurn {
+    pub user_query: String,
+    pub assistant_content: String,
+    #[serde(default)]
+    pub assistant_thinking: Option<String>,
 }
 
 /// OpenAI-compatible chat request

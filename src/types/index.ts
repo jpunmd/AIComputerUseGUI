@@ -46,6 +46,7 @@ export interface Message {
   screenshot?: string;
   action?: ActionResult;
   stepNumber?: number; // For multi-turn, which step this is
+  thinking?: string; // Reasoning content from thinking-enabled models
 }
 
 // Serializable version of Message for storage (Date as ISO string)
@@ -57,6 +58,7 @@ export interface SerializedMessage {
   screenshot?: string;
   action?: ActionResult;
   stepNumber?: number;
+  thinking?: string;
 }
 
 // A saved chat session

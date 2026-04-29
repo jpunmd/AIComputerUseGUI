@@ -47,6 +47,7 @@ async fn process_computer_use(
     system_prompt: String,
     screenshot_history: Option<Vec<String>>,
     enable_thinking: Option<bool>,
+    prior_turns: Option<Vec<types::PriorTurn>>,
 ) -> Result<AgentResponse, String> {
     api::call_computer_use_api(
         &api_endpoint,
@@ -58,6 +59,7 @@ async fn process_computer_use(
         &system_prompt,
         screenshot_history,
         enable_thinking.unwrap_or(false),
+        prior_turns,
     )
     .await
     .map_err(|e| e.to_string())
