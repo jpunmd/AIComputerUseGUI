@@ -170,8 +170,8 @@ export function useAgent() {
   // Execute action
   const executeAction = useCallback(async (action: AgentResponse['action']): Promise<boolean> => {
     try {
-      // Skip execution for "done" or "none" (conversational) actions
-      if (action.action === 'done' || action.action === 'none') {
+      // Skip execution for "done" action
+      if (action.action === 'done') {
         return true;
       }
       await invoke('execute_action', { action: JSON.stringify(action) });
@@ -263,12 +263,6 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
             timestamp: new Date(),
           };
           setMessages(prev => [...prev, doneMessage]);
-          break;
-        }
-
-        // Check if this is a conversational response (no computer action needed)
-        if (response.action.action === 'none') {
-          // Just display the response, no action to execute, stop the loop
           break;
         }
 
