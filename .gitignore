@@ -1,0 +1,45 @@
+# Dependencies / build output
+node_modules
+dist
+src-tauri/target/
+src-tauri/target/debug
+src-tauri/target/release
+src-tauri/gen/*
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets / env files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cert
+*.crt
+secrets.json
+credentials.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code local state (worktrees, sessions, settings)
+.claude/
+
+# Tauri signing keys (never commit these)
+*.tauri-signing-key
+*.tauri-signing-key.pub

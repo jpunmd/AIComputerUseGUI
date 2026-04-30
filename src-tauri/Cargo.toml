@@ -1,0 +1,25 @@
+[package]
+name = "ai-computer-use-gui"
+version = "0.1.0"
+description = "AI Computer Use Agent with Qwen3-VL"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "ai_computer_use_gui_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+base64 = "0.22"
+screenshots = "0.8"
+image = "0.25"
+enigo = "0.4"
+thiserror = "2"
