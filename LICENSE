@@ -1,0 +1,48 @@
+SOFTWARE LICENSE AGREEMENT
+Copyright (c) 2026 Jonathan Pun. All Rights Reserved.
+Licensor: Jonathan Pun
+Software Name: AI Computer Use Agent
+Release Date: April 29, 2026
+By clicking to agree or by using or distributing any portion or element of the Licensed Materials, you will be deemed to have recognized and accepted the content of this Agreement, which is effective immediately.
+________________________________________
+1. Definitions
+a. This SOFTWARE LICENSE AGREEMENT (this "Agreement") shall mean the terms and conditions for use, reproduction, distribution, and modification of the Materials as defined by this Agreement.
+b. "We" (or "Us") shall mean the Licensor, as identified in the accompanying product or repository documentation.
+c. "You" (or "Your") shall mean a natural person or legal entity exercising the rights granted by this Agreement and/or using the Materials for any purpose and in any field of use.
+d. "Third Parties" shall mean individuals or legal entities that are not under common control with Us or You.
+e. "Software" shall mean the large language models, algorithms, software, and related systems, including trained model weights, parameters (including optimizer states), model code, inference-enabling code, training-enabling code, fine-tuning-enabling code, and other elements thereof distributed by Us.
+f. "Materials" shall mean, collectively, the Licensor's proprietary Software and Documentation (and any portion thereof) made available under this Agreement.
+g. "Source" form shall mean the preferred form for making modifications, including but not limited to model source code, documentation source, and configuration files.
+h. "Object" form shall mean any form resulting from mechanical transformation or translation of a Source form, including but not limited to compiled object code, generated documentation, and conversions to other media types.
+________________________________________
+2. Grant of Rights
+You are granted a non-exclusive, worldwide, non-transferable, and royalty-free limited license under the Licensor's intellectual property or other rights embodied in the Materials to use, reproduce, distribute, copy, create derivative works of, and make modifications to the Materials, subject to the terms and conditions of this Agreement.
+________________________________________
+3. Redistribution
+You may distribute copies of, or make available, the Materials or derivative works thereof, as part of a product or service, with or without modifications, and in Source or Object form, provided that you meet the following conditions:
+a. You shall provide any other recipients of the Materials or derivative works a copy of this Agreement;
+b. You shall cause any modified files to carry prominent notices stating that you changed the files;
+c. You shall retain in all copies of the Materials that you distribute the following attribution notice within a "Notice" text file distributed as part of such copies: "This software is licensed under the Software License Agreement. Copyright (c) Jonathan Pun. All Rights Reserved."; and
+d. You may add your own copyright statement to your modifications and may provide additional or different license terms and conditions for use, reproduction, or distribution of your modifications, or for any derivative works as a whole, provided your use, reproduction, and distribution otherwise comply with this Agreement.
+________________________________________
+4. Restrictions
+Commercial Use Threshold. If your use of the Materials is commercial in nature and your product or service either (i) exceeds 1,000 monthly active users, or (ii) generates more than $10,000 USD in annual revenue, you must obtain a separate commercial license from Us prior to such use. You may not exercise your rights under this Agreement beyond these thresholds without Our express written authorization. To inquire about a commercial license, contact Us at the address provided in the accompanying documentation.
+________________________________________
+5. Rules of Use
+a. The Materials may be subject to export controls or restrictions under the laws of the United States or other countries or regions. You shall comply with all applicable laws and regulations, including U.S. Export Administration Regulations, in your use of the Materials.
+b. If you use the Materials or any outputs or results therefrom to create, train, fine-tune, or improve an AI model that is distributed or made available to others, you shall prominently display "Built with AI Computer Use Agent" or "Improved using AI Computer Use Agent" in the related product documentation.
+________________________________________
+6. Intellectual Property
+a. We retain ownership of all intellectual property rights in and to the Materials and any derivatives made by or for Us. Conditioned upon compliance with this Agreement, You are and will be the owner of any derivative works and modifications of the Materials that are made by You.
+b. No trademark license is granted to use the trade names, trademarks, service marks, or product names of the Licensor, except as required to fulfill notice requirements under this Agreement or for reasonable and customary use in describing and redistributing the Materials.
+c. If You commence a lawsuit or other legal proceeding (including a cross-claim or counterclaim) against Us or any entity alleging that the Materials or any output therefrom infringe any intellectual property or other right owned or licensable by You, then all licenses granted to You under this Agreement shall terminate as of the date such lawsuit or proceeding is commenced.
+________________________________________
+7. Disclaimer of Warranty and Limitation of Liability
+a. We are not obligated to support, update, provide training for, or develop any further version of the Materials or to grant any license thereto.
+b. THE MATERIALS ARE PROVIDED "AS IS" WITHOUT ANY EXPRESS OR IMPLIED WARRANTY OF ANY KIND, INCLUDING WARRANTIES OF MERCHANTABILITY, NON-INFRINGEMENT, OR FITNESS FOR A PARTICULAR PURPOSE. WE MAKE NO WARRANTY AND ASSUME NO RESPONSIBILITY FOR THE SAFETY OR STABILITY OF THE MATERIALS OR ANY OUTPUT THEREFROM.
+c. IN NO EVENT SHALL WE BE LIABLE TO YOU FOR ANY DAMAGES, INCLUDING BUT NOT LIMITED TO ANY DIRECT, INDIRECT, SPECIAL, OR CONSEQUENTIAL DAMAGES ARISING FROM YOUR USE OF OR INABILITY TO USE THE MATERIALS OR ANY OUTPUT THEREOF, HOWEVER CAUSED.
+d. You shall defend, indemnify, and hold Us harmless from and against any claim by any Third Party arising out of or related to your use or distribution of the Materials.
+________________________________________
+8. Survival and Termination
+a. This Agreement shall commence upon your acceptance of this Agreement or your access to the Materials and will continue in full force and effect until terminated in accordance with its terms.
+b. We may terminate this Agreement if You breach any of its terms or conditions. Upon termination, You must immediately cease use of and delete the Materials. Sections 7 shall survive any termination of this Agreement.
