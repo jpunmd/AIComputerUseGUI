@@ -143,13 +143,16 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             
             println!("Scroll: direction={}, amount={}", direction, amount);
             
+            // enigo 0.4 negates `length` internally before applying WHEEL_DELTA on
+            // the Vertical axis, so positive length scrolls down and negative
+            // scrolls up. Horizontal follows the natural sign (positive = right).
             match direction {
                 "up" => {
-                    enigo.scroll(amount, enigo::Axis::Vertical)
+                    enigo.scroll(-amount, enigo::Axis::Vertical)
                         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
                 }
                 "down" => {
-                    enigo.scroll(-amount, enigo::Axis::Vertical)
+                    enigo.scroll(amount, enigo::Axis::Vertical)
                         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
                 }
                 "left" => {
@@ -162,7 +165,7 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
                 }
                 _ => {
                     println!("Unknown scroll direction '{}', defaulting to down", direction);
-                    enigo.scroll(-amount, enigo::Axis::Vertical)
+                    enigo.scroll(amount, enigo::Axis::Vertical)
                         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
                 }
             }
