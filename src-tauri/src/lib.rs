@@ -48,6 +48,7 @@ async fn process_computer_use(
     screenshot_history: Option<Vec<String>>,
     enable_thinking: Option<bool>,
     prior_turns: Option<Vec<types::PriorTurn>>,
+    coordinate_base: Option<f64>,
 ) -> Result<AgentResponse, String> {
     api::call_computer_use_api(
         &api_endpoint,
@@ -60,6 +61,39 @@ async fn process_computer_use(
         screenshot_history,
         enable_thinking.unwrap_or(false),
         prior_turns,
+        coordinate_base.unwrap_or(1000.0),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Refine a coarse click coordinate with a zoomed-in second pass.
+#[tauri::command]
+async fn refine_coordinate(
+    api_endpoint: String,
+    model_id: String,
+    coarse_x: f64,
+    coarse_y: f64,
+    action_type: String,
+    query: String,
+    crop_fraction: Option<f64>,
+    max_dimension: Option<u32>,
+    coordinate_base: Option<f64>,
+    enable_thinking: Option<bool>,
+    box_mode: Option<bool>,
+) -> Result<api::RefineResult, String> {
+    api::refine_coordinate(
+        &api_endpoint,
+        &model_id,
+        coarse_x,
+        coarse_y,
+        &action_type,
+        &query,
+        crop_fraction.unwrap_or(0.3),
+        max_dimension.unwrap_or(1280),
+        coordinate_base.unwrap_or(1000.0),
+        enable_thinking.unwrap_or(false),
+        box_mode.unwrap_or(false),
     )
     .await
     .map_err(|e| e.to_string())
@@ -67,7 +101,7 @@ async fn process_computer_use(
 
 /// Execute an action on the computer
 #[tauri::command]
-async fn execute_action(action: String) -> Result<(), String> {
+async fn execute_action(action: String, coordinate_base: Option<f64>) -> Result<(), String> {
     #[cfg(debug_assertions)]
     println!("execute_action called ({} bytes)", action.len());
 
@@ -81,7 +115,7 @@ async fn execute_action(action: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     println!("Screen dimensions: {}x{}", width, height);
 
-    actions::execute_action(&action_result, width, height).map_err(|e| e.to_string())
+    actions::execute_action(&action_result, width, height, coordinate_base.unwrap_or(1000.0)).map_err(|e| e.to_string())
 }
 
 /// Test API connection
@@ -113,6 +147,7 @@ pub fn run() {
             capture_screenshot,
             capture_screenshot_with_metadata,
             process_computer_use,
+            refine_coordinate,
             execute_action,
             test_api_connection,
             fetch_available_models,

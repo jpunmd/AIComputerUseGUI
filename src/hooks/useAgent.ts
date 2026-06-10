@@ -126,6 +126,45 @@ export function useAgent() {
         priorTurns: priorTurns && priorTurns.length > 0 ? priorTurns : null,
       });
 
+      // Optional second pass: coarse-to-fine zoom. Re-click on a magnified crop
+      // centered on the coarse prediction so a small/edge target spans many more
+      // patches. Mutates the action's coordinate in place so execution and the
+      // crosshair overlay both use the refined point.
+      let zoomCrop: string | undefined;
+      let zoomCropCoordinate: number[] | undefined;
+      let zoomCropBox: number[] | undefined;
+      const coord = response.action?.arguments?.coordinate;
+      const refinable = ['click', 'left_click', 'right_click', 'double_click'].includes(
+        response.action?.action ?? ''
+      );
+      if (settings.zoomRefine && refinable && coord && coord.length >= 2) {
+        try {
+          const refined = await invoke<{ coordinate: number[]; crop_coordinate: number[]; crop_box: number[]; crop_image: string; refined: boolean }>(
+            'refine_coordinate',
+            {
+              apiEndpoint: settings.apiEndpoint,
+              modelId: settings.modelId,
+              coarseX: coord[0],
+              coarseY: coord[1],
+              actionType: response.action.action,
+              query,
+              cropFraction: settings.zoomCropFraction,
+              maxDimension: settings.screenshotMaxDimension,
+              enableThinking: settings.enableThinking,
+              boxMode: settings.boxRefine,
+            }
+          );
+          if (refined.refined) {
+            response.action.arguments.coordinate = refined.coordinate;
+            zoomCropCoordinate = refined.crop_coordinate?.length >= 2 ? refined.crop_coordinate : undefined;
+            zoomCropBox = refined.crop_box?.length >= 4 ? refined.crop_box : undefined;
+          }
+          zoomCrop = refined.crop_image;
+        } catch (err) {
+          console.error('[zoom] refine failed, using coarse coordinate', err);
+        }
+      }
+
       // Add assistant message - include screenshot so user can see what model saw
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
@@ -136,6 +175,9 @@ export function useAgent() {
         screenshot, // Always include screenshot so user can see what model analyzed
         stepNumber, // Track which step this is in multi-turn
         thinking: response.thinking,
+        zoomCrop,
+        zoomCropCoordinate,
+        zoomCropBox,
       };
       setMessages(prev => [...prev, assistantMessage]);
 

@@ -1,6 +1,6 @@
 # AI Computer Use Agent
 
-A Windows Tauri desktop application that uses Qwen3-VL, Qwen3.5, or Qwen3.6 multimodal LLM to control your computer through natural language commands.
+A Windows Tauri desktop application that uses a multimodal LLM — Qwen3-VL, Qwen3.5, Qwen3.6, or Gemma 4 — to control your computer through natural language commands.
 
 ## ⚠️ Safety Warning — Read Before Running
 
@@ -41,8 +41,9 @@ You assume all risk for any actions the agent takes. See the [LICENSE](LICENSE) 
 - [Node.js](https://nodejs.org/) (v18 or later)
 - [Rust](https://rustup.rs/) (latest stable)
 - [Tauri CLI](https://tauri.app/v1/guides/getting-started/prerequisites)
-- An OpenAI-compatible API server running Qwen3-VL, Qwen3.5, or Qwen3.6. Recommend using Qwen3.6 35B-A3B or 27B.
+- An OpenAI-compatible API server running Qwen3-VL, Qwen3.5, Qwen3.6, or Gemma 4. Recommend using Qwen3.6 35B-A3B or 27B.
 - Recommend "preserve thinking" on.
+- **Gemma 4 note:** Gemma 4 also outputs coordinates on a 1000×1000 grid, so it works out of the box. Its click grounding is less precise than Qwen3-VL on small or edge targets — enable **Zoom Refine** (and optionally bounding-box mode) in settings to improve accuracy.
 
 ## Installation
 
@@ -81,7 +82,7 @@ Click the **Settings** (gear icon) button in the top right corner to configure:
 
 ## Usage
 
-1. **Start your Qwen3.6 API server** (must be OpenAI-compatible)
+1. **Start your model's API server** (must be OpenAI-compatible)
 
 2. **Configure the API endpoint** in settings
 
@@ -135,7 +136,7 @@ Click the **Settings** (gear icon) button in the top right corner to configure:
 │   └── src/
 │       ├── main.rs         # Entry point
 │       ├── lib.rs          # Tauri commands
-│       ├── api.rs          # API client for Qwen3-VL
+│       ├── api.rs          # API client for the vision-language model
 │       ├── screenshot.rs   # Screenshot capture
 │       ├── actions.rs      # Computer actions (mouse, keyboard)
 │       └── types.rs        # Rust types

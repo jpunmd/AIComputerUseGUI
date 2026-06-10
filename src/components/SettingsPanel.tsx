@@ -103,7 +103,7 @@ export function SettingsPanel({
               />
             </div>
             <p className="text-xs text-dark-500">
-              OpenAI-compatible API endpoint for Qwen3-VL
+              OpenAI-compatible API endpoint for your vision-language model
             </p>
           </div>
 
@@ -229,7 +229,7 @@ export function SettingsPanel({
                 Thinking Mode
               </label>
               <p className="text-xs text-dark-500">
-                Enable reasoning/thinking for supported models (Qwen3, DeepSeek-R1, etc.)
+                Enable reasoning/thinking for models that support it (Qwen3, Gemma, DeepSeek-R1, etc.)
               </p>
             </div>
             <button
@@ -315,6 +315,100 @@ export function SettingsPanel({
             <p className="text-xs text-dark-500">
               Maximum width/height for screenshots sent to the model. Lower values use fewer tokens but may lose detail.
             </p>
+          </div>
+
+          {/* Zoom Refine (two-pass coarse-to-fine) */}
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <label className="block text-sm font-medium text-dark-300">
+                Zoom Refine (two-pass)
+              </label>
+              <p className="text-xs text-dark-500">
+                After the first prediction, re-capture a magnified crop around it and click again for sub-patch precision. Adds one API call per click.
+              </p>
+            </div>
+            <button
+              onClick={() => onUpdateSettings({ zoomRefine: !settings.zoomRefine })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                settings.zoomRefine ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.zoomRefine ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Zoom crop size - only relevant when refine is on */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-dark-300">
+              Zoom Crop Size
+            </label>
+            <select
+              value={settings.zoomCropFraction}
+              onChange={(e) => onUpdateSettings({ zoomCropFraction: parseFloat(e.target.value) })}
+              disabled={!settings.zoomRefine}
+              className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <option value={0.2}>20% (tightest zoom — small targets, riskier if coarse is off)</option>
+              <option value={0.3}>30% (recommended)</option>
+              <option value={0.4}>40% (safer framing, less magnification)</option>
+              <option value={0.5}>50% (loosest)</option>
+            </select>
+            <p className="text-xs text-dark-500">
+              Size of the zoom window as a fraction of the screen, centered on the first prediction. Smaller = more magnification, but the true target must fall inside it.
+            </p>
+          </div>
+
+          {/* Box-center refine - only relevant when refine is on */}
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <label className="block text-sm font-medium text-dark-300">
+                Refine with Bounding Box
+              </label>
+              <p className="text-xs text-dark-500">
+                Pass 2 returns a tight box around the glyph (excluding its text label) and clicks the box center, instead of predicting a point. Taps Gemma's native detection format. A/B it against point mode with the calibration probe.
+              </p>
+            </div>
+            <button
+              onClick={() => onUpdateSettings({ boxRefine: !settings.boxRefine })}
+              disabled={!settings.zoomRefine}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                settings.boxRefine ? 'bg-primary-500' : 'bg-dark-600'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.boxRefine ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Debug Mode */}
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <label className="block text-sm font-medium text-dark-300">
+                Debug Mode
+              </label>
+              <p className="text-xs text-dark-500">
+                Show developer instruments — the calibration probe in the expanded screenshot view (click-to-measure click accuracy, sample recording, and the fit).
+              </p>
+            </div>
+            <button
+              onClick={() => onUpdateSettings({ debugMode: !settings.debugMode })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                settings.debugMode ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.debugMode ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
           </div>
 
           {/* Test Connection */}

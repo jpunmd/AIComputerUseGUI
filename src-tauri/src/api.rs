@@ -17,7 +17,7 @@ pub enum ApiError {
 /// Set to 0 to disable screenshot history (recommended - multiple images can confuse the model)
 const MAX_SCREENSHOT_HISTORY: usize = 0;
 
-/// Call the Qwen3-VL API for computer use
+/// Call the vision-language model API for computer use
 pub async fn call_computer_use_api(
     api_endpoint: &str,
     model_id: &str,
@@ -29,6 +29,7 @@ pub async fn call_computer_use_api(
     screenshot_history: Option<Vec<String>>,
     enable_thinking: bool,
     prior_turns: Option<Vec<PriorTurn>>,
+    coordinate_base: f64,
 ) -> Result<AgentResponse, ApiError> {
     #[cfg(debug_assertions)]
     {
@@ -93,7 +94,7 @@ pub async fn call_computer_use_api(
     // Prior turns are text-only (no screenshots) to keep token cost down — the
     // current screenshot is the source of truth, prior thinking + actions give
     // continuity. When preserve_thinking is enabled, prior assistant content is
-    // wrapped with <think>...</think> so the Qwen3-VL chat template re-includes
+    // wrapped with <think>...</think> so the model's chat template re-includes
     // the reasoning instead of stripping it.
     let mut messages: Vec<ChatMessage> = Vec::new();
     messages.push(ChatMessage {
@@ -187,13 +188,14 @@ pub async fn call_computer_use_api(
     println!("Parsed action: {}", action.action);
     
     // Calculate absolute coordinates if present
-    // The model outputs coordinates in 0-1000 range, we need to scale to actual screen size
-    // display_width/height passed from frontend are the actual screen dimensions
+    // The model outputs coordinates in a normalized space (coordinate_base), we
+    // scale to actual screen size. display_width/height passed from frontend are
+    // the actual screen dimensions.
     let coordinate_absolute = action.arguments.coordinate.as_ref().map(|coord| {
         if coord.len() >= 2 {
-            // Model uses 0-1000 coordinate space, scale to actual screen dimensions
-            let abs_x = coord[0] / 1000.0 * display_width as f64;
-            let abs_y = coord[1] / 1000.0 * display_height as f64;
+            // Model uses 0-coordinate_base space, scale to actual screen dimensions
+            let abs_x = coord[0] / coordinate_base * display_width as f64;
+            let abs_y = coord[1] / coordinate_base * display_height as f64;
             #[cfg(debug_assertions)]
             println!("Coordinate conversion: model ({}, {}) -> screen ({}, {}) [screen size: {}x{}]",
                 coord[0], coord[1], abs_x, abs_y, display_width, display_height);
@@ -262,6 +264,202 @@ pub async fn call_computer_use_api(
     println!("AgentResponse: action={}, is_done={}", response.action.action, response.is_done);
     
     Ok(response)
+}
+
+/// Result of a zoom-refine (second) pass.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RefineResult {
+    /// Refined coordinate in normalized `coordinate_base` space over the FULL
+    /// screen (i.e. after descale #1: crop-local -> full-screen normalized).
+    pub coordinate: Vec<f64>,
+    /// The raw pass-2 coordinate the model emitted, in normalized
+    /// `coordinate_base` space over the CROP image. Empty when not refined.
+    /// Used to draw the click marker on the zoom crop in the chat history.
+    pub crop_coordinate: Vec<f64>,
+    /// The raw bounding box [x0, y0, x1, y1] the model emitted in box mode,
+    /// in normalized `coordinate_base` space over the CROP image. Empty unless
+    /// box mode produced a 4-element box. Used to draw the box on the crop.
+    pub crop_box: Vec<f64>,
+    /// The zoomed crop image (base64 PNG) the refine pass looked at.
+    pub crop_image: String,
+    /// True if refinement produced a coordinate; false if it fell back to coarse.
+    pub refined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+/// Second pass of coarse-to-fine grounding. Crops a zoom window around the
+/// coarse prediction (from the native screen), asks the model to click the
+/// precise center within that magnified view, then maps the crop-local
+/// coordinate back to full-screen normalized space.
+#[allow(clippy::too_many_arguments)]
+pub async fn refine_coordinate(
+    api_endpoint: &str,
+    model_id: &str,
+    coarse_x: f64,
+    coarse_y: f64,
+    action_type: &str,
+    query: &str,
+    crop_frac: f64,
+    max_dimension: u32,
+    coordinate_base: f64,
+    enable_thinking: bool,
+    box_mode: bool,
+) -> Result<RefineResult, ApiError> {
+    // Coarse normalized coord -> center fraction for the crop window.
+    let center_fx = coarse_x / coordinate_base;
+    let center_fy = coarse_y / coordinate_base;
+
+    let crop = crate::screenshot::capture_zoom_crop(center_fx, center_fy, crop_frac, max_dimension)
+        .map_err(|e| ApiError::ApiResponseError(format!("zoom capture failed: {}", e)))?;
+
+    let base_int = coordinate_base.round() as i64;
+    // Two grounding formats to A/B: a direct click point, or a tight bounding box
+    // (Gemma's native detection format) whose center we click. The box prompt
+    // explicitly excludes text labels so the center lands on the glyph, not the
+    // caption beneath an icon.
+    let (system_prompt, focused_query) = if box_mode {
+        (
+            format!(
+                "You are a precise visual grounding assistant viewing a ZOOMED-IN crop of a \
+                 computer screen. A magenta crosshair reticle marks the APPROXIMATE location of \
+                 the intended target (from a previous step). Draw the TIGHTEST bounding box \
+                 around the single CLICKABLE element at or nearest the reticle — the icon glyph, \
+                 button, or input field itself. Do NOT include the text label or caption beneath \
+                 or beside an icon; box only the clickable graphic. Return the box as four \
+                 normalized 0-{base} coordinates [x0, y0, x1, y1] (top-left, then bottom-right) \
+                 over THIS image. ALWAYS respond with exactly one tool_call; never refuse, never \
+                 return plain text. Respond ONLY with: <tool_call>{{\"name\": \"computer\", \
+                 \"arguments\": {{\"action\": \"{action}\", \"coordinate\": [x0, y0, x1, y1]}}}}</tool_call>",
+                action = action_type,
+                base = base_int
+            ),
+            format!(
+                "Goal: {goal}\n\nThe magenta reticle marks the approximate target. Return the \
+                 TIGHT bounding box [x0, y0, x1, y1] around the clickable element itself (exclude \
+                 any text label) as a single {action} tool_call.",
+                goal = query,
+                action = action_type
+            ),
+        )
+    } else {
+        (
+            format!(
+                "You are a precise click-localization assistant viewing a ZOOMED-IN crop of a \
+                 computer screen. A magenta crosshair reticle has been drawn on the image to mark \
+                 the APPROXIMATE location of the intended target (from a previous step). Identify \
+                 the single UI element (icon, button, field, menu item, or text) at or nearest \
+                 the reticle, and return the precise coordinate of THAT element's center. The \
+                 reticle marks the target's vicinity, not necessarily its exact center — correct \
+                 to the true center of the element. ALWAYS respond with exactly one tool_call \
+                 containing a coordinate; never refuse, never return plain text, never claim the \
+                 target is missing. Use normalized 0-{base} coordinates over THIS image \
+                 ((0,0)=top-left, ({base},{base})=bottom-right). Respond ONLY with: \
+                 <tool_call>{{\"name\": \"computer\", \"arguments\": {{\"action\": \"{action}\", \"coordinate\": [x, y]}}}}</tool_call>",
+                action = action_type,
+                base = base_int
+            ),
+            format!(
+                "Goal: {goal}\n\nThe magenta reticle marks the approximate location of the target \
+                 for that goal. Return the precise CENTER of the UI element at the reticle as a \
+                 single {action} tool_call.",
+                goal = query,
+                action = action_type
+            ),
+        )
+    };
+
+    // Reuse the main call path on the crop image (no history, no prior turns).
+    // The display dims are irrelevant here — we read the normalized coordinate,
+    // not the absolute one — so pass the base for both.
+    //
+    // A pass-2 failure must NOT discard the crop we already captured: keep the
+    // coarse coordinate but still return the crop image so the chat history can
+    // show what the zoom pass looked at (and log why it fell back).
+    let resp = match call_computer_use_api(
+        api_endpoint,
+        model_id,
+        &crop.base64_image,
+        &focused_query,
+        base_int as u32,
+        base_int as u32,
+        &system_prompt,
+        None,
+        enable_thinking,
+        None,
+        coordinate_base,
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            println!("Refine pass-2 inference failed ({}); keeping coarse, returning crop", e);
+            return Ok(RefineResult {
+                coordinate: vec![coarse_x, coarse_y],
+                crop_coordinate: vec![],
+                crop_box: vec![],
+                crop_image: crop.base64_image,
+                refined: false,
+                thinking: None,
+            });
+        }
+    };
+
+    // Resolve the crop-local click point. In box mode the model returns
+    // [x0, y0, x1, y1]; click its center. Otherwise it returns [x, y] directly.
+    // Fall back to a 2-element point even in box mode if the model ignored the
+    // box instruction.
+    let local_point = resp.action.arguments.coordinate.as_ref().and_then(|coord| {
+        if box_mode && coord.len() >= 4 {
+            Some(((coord[0] + coord[2]) / 2.0, (coord[1] + coord[3]) / 2.0))
+        } else if coord.len() >= 2 {
+            Some((coord[0], coord[1]))
+        } else {
+            None
+        }
+    });
+
+    // The raw box, kept for drawing on the crop in the chat history.
+    let crop_box = resp
+        .action
+        .arguments
+        .coordinate
+        .as_ref()
+        .filter(|_| box_mode)
+        .filter(|c| c.len() >= 4)
+        .map(|c| vec![c[0], c[1], c[2], c[3]])
+        .unwrap_or_default();
+
+    // Map the crop-local point back to full-screen normalized.
+    if let Some((local_x, local_y)) = local_point {
+        let local_fx = (local_x / coordinate_base).clamp(0.0, 1.0);
+        let local_fy = (local_y / coordinate_base).clamp(0.0, 1.0);
+        let full_fx = crop.origin_fx + local_fx * crop.frac_w;
+        let full_fy = crop.origin_fy + local_fy * crop.frac_h;
+        println!(
+            "Refine ({}): crop-local ({:.1},{:.1}) -> full normalized ({:.1},{:.1}) [was coarse ({:.1},{:.1})]",
+            if box_mode { "box" } else { "point" },
+            local_x, local_y, full_fx * coordinate_base, full_fy * coordinate_base, coarse_x, coarse_y
+        );
+        return Ok(RefineResult {
+            coordinate: vec![full_fx * coordinate_base, full_fy * coordinate_base],
+            crop_coordinate: vec![local_x, local_y],
+            crop_box,
+            crop_image: crop.base64_image,
+            refined: true,
+            thinking: resp.thinking,
+        });
+    }
+
+    // Refine produced no usable coordinate — keep the coarse prediction.
+    Ok(RefineResult {
+        coordinate: vec![coarse_x, coarse_y],
+        crop_coordinate: vec![],
+        crop_box: vec![],
+        crop_image: crop.base64_image,
+        refined: false,
+        thinking: resp.thinking,
+    })
 }
 
 /// Extract <think>...</think> blocks from the model output.

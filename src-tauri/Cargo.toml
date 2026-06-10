@@ -1,7 +1,7 @@
 [package]
 name = "ai-computer-use-gui"
-version = "0.1.0"
-description = "AI Computer Use Agent with Qwen3-VL"
+version = "1.1.0"
+description = "AI Computer Use Agent powered by a vision-language model"
 authors = ["you"]
 edition = "2021"
 

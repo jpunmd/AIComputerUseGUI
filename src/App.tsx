@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat, AlertTriangle, Check, X, Save, History, MessageCircle } from 'lucide-react';
+import { Settings, Sparkles, Trash2, Play, Square, MousePointer, StopCircle, Repeat, AlertTriangle, Check, X, Save, History, MessageCircle, Crosshair } from 'lucide-react';
 import {
   SettingsPanel,
   ChatHistory,
@@ -17,6 +17,9 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [autoExecute, setAutoExecute] = useState(false);
   const [multiTurnMode, setMultiTurnMode] = useState(true);
+  // Dry run: ask the model for one action and draw a crosshair where it would
+  // click, without moving the mouse. For calibrating coordinate accuracy.
+  const [dryRun, setDryRun] = useState(false);
   const [lastAction, setLastAction] = useState<ActionResult | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [activeTab, setActiveTab] = useState<'chat' | 'history'>('chat');
@@ -102,7 +105,21 @@ function App() {
   const handleSubmit = async (query: string) => {
     setError(null);
     setLastAction(null);
-    
+
+    // Dry run is a debug-only mode; ignore stale state if debug mode is off.
+    if (dryRun && settings.debugMode) {
+      // Dry run: predict a single action and draw the crosshair on the
+      // screenshot the model saw, but never execute. Ignores multi-turn so the
+      // preview is a single, inspectable step.
+      const response = await processQuery(query, settings);
+      if (response?.success) {
+        setIsConnected(true);
+      } else if (response === null) {
+        setIsConnected(false);
+      }
+      return;
+    }
+
     if (multiTurnMode) {
       // Multi-turn mode: run until task is complete
       await runMultiTurn(query, settings, () => updateSettings({ autoApproveConfirmations: true }));
@@ -143,7 +160,6 @@ function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold gradient-text">AI Computer Use</h1>
-            <p className="text-xs text-dark-400">Powered by Qwen3-VL</p>
           </div>
         </div>
 
@@ -166,6 +182,22 @@ function App() {
               </span>
             )}
           </button>
+
+          {/* Dry-run toggle - preview clicks without executing (debug only) */}
+          {settings.debugMode && (
+            <button
+              onClick={() => setDryRun(!dryRun)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
+                dryRun
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50'
+                  : 'bg-dark-800 text-dark-400 border border-dark-600 hover:border-dark-500'
+              }`}
+              title={dryRun ? 'Dry run ON: preview the predicted click as a crosshair, do not move the mouse' : 'Dry run OFF: actions execute normally'}
+            >
+              <Crosshair className="w-4 h-4" />
+              <span className="text-sm">Dry run</span>
+            </button>
+          )}
 
           {/* Stop button - only show during multi-turn execution */}
           {isMultiTurnRunning && (
@@ -273,7 +305,7 @@ function App() {
           {/* Tab content */}
           {activeTab === 'chat' ? (
             <>
-              <ChatHistory messages={messages} expandThinkingByDefault={settings.expandThinkingByDefault} />
+              <ChatHistory messages={messages} expandThinkingByDefault={settings.expandThinkingByDefault} debugMode={settings.debugMode} />
               
               {/* Execute Action Button */}
               {lastAction && !autoExecute && (

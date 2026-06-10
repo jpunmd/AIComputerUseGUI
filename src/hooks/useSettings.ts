@@ -57,6 +57,10 @@ const DEFAULT_SETTINGS: Settings = {
   enableThinking: true, // Thinking mode on by default (Qwen3-VL thinking models)
   expandThinkingByDefault: false, // Thinking blocks collapsed by default; user clicks to expand
   autoApproveConfirmations: false, // When true, skip the confirmation dialog for sensitive actions
+  zoomRefine: false, // Off by default; two-pass adds a second API call per click
+  zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
+  boxRefine: false, // Pass 2 clicks a point by default; box-center is opt-in for A/B testing
+  debugMode: false, // Developer instruments (calibration probe) hidden by default
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';

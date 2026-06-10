@@ -16,9 +16,12 @@ pub enum ActionError {
     MissingArgument(String),
 }
 
-/// Execute an action on the computer
-pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u32) -> Result<(), ActionError> {
-    println!("Executing action: {} with screen size {}x{}", action.action, screen_width, screen_height);
+/// Execute an action on the computer.
+/// `coordinate_base` is the normalized space the model emits coordinates in.
+/// The grounding models this app targets (Qwen3-VL, Gemma) all use 0-1000, so
+/// callers pass 1000.0; the parameter is kept to localize the scaling math.
+pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u32, coordinate_base: f64) -> Result<(), ActionError> {
+    println!("Executing action: {} with screen size {}x{} (coordinate base {})", action.action, screen_width, screen_height, coordinate_base);
     
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
@@ -33,8 +36,8 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             }
             
             // Model outputs in 0-1000 range, scale to actual screen size
-            let x = (coord[0] / 1000.0 * screen_width as f64) as i32;
-            let y = (coord[1] / 1000.0 * screen_height as f64) as i32;
+            let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
+            let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
             
             println!("Click: model coords ({}, {}) -> screen coords ({}, {})", coord[0], coord[1], x, y);
             
@@ -55,8 +58,8 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
                 return Err(ActionError::InvalidAction("coordinate must have x and y values".to_string()));
             }
             
-            let x = (coord[0] / 1000.0 * screen_width as f64) as i32;
-            let y = (coord[1] / 1000.0 * screen_height as f64) as i32;
+            let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
+            let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
             
             enigo.move_mouse(x, y, Coordinate::Abs)
                 .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
@@ -73,8 +76,8 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
                 return Err(ActionError::InvalidAction("coordinate must have x and y values".to_string()));
             }
             
-            let x = (coord[0] / 1000.0 * screen_width as f64) as i32;
-            let y = (coord[1] / 1000.0 * screen_height as f64) as i32;
+            let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
+            let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
             
             enigo.move_mouse(x, y, Coordinate::Abs)
                 .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
@@ -96,10 +99,10 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
                 return Err(ActionError::InvalidAction("coordinates must have x and y values".to_string()));
             }
             
-            let start_x = (start[0] / 1000.0 * screen_width as f64) as i32;
-            let start_y = (start[1] / 1000.0 * screen_height as f64) as i32;
-            let end_x = (end[0] / 1000.0 * screen_width as f64) as i32;
-            let end_y = (end[1] / 1000.0 * screen_height as f64) as i32;
+            let start_x = (start[0] / coordinate_base * screen_width as f64) as i32;
+            let start_y = (start[1] / coordinate_base * screen_height as f64) as i32;
+            let end_x = (end[0] / coordinate_base * screen_width as f64) as i32;
+            let end_y = (end[1] / coordinate_base * screen_height as f64) as i32;
             
             // Move to start position
             enigo.move_mouse(start_x, start_y, Coordinate::Abs)
@@ -130,8 +133,8 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             // If we have coordinates, move there first
             if let Some(coord) = coord {
                 if coord.len() >= 2 {
-                    let x = (coord[0] / 1000.0 * screen_width as f64) as i32;
-                    let y = (coord[1] / 1000.0 * screen_height as f64) as i32;
+                    let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
+                    let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
                     
                     enigo.move_mouse(x, y, Coordinate::Abs)
                         .map_err(|e| ActionError::ExecutionError(e.to_string()))?;

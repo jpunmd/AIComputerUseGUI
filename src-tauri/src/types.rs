@@ -150,7 +150,7 @@ pub struct ChatTemplateKwargs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_thinking: Option<bool>,
     /// Preserve thinking from prior assistant turns when reconstructing the
-    /// chat history. New Qwen3-VL chat-template kwarg.
+    /// chat history. Chat-template kwarg for preserving prior reasoning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preserve_thinking: Option<bool>,
 }

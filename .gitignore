@@ -2,9 +2,8 @@
 node_modules
 dist
 src-tauri/target/
-src-tauri/target/debug
-src-tauri/target/release
 src-tauri/gen/*
+*.tsbuildinfo
 
 # Logs
 *.log
@@ -22,6 +21,14 @@ yarn-error.log*
 *.pfx
 *.cert
 *.crt
+*.der
+*.asc
+*.gpg
+*.ppk
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
 secrets.json
 credentials.json
 
