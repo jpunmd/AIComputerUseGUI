@@ -43,10 +43,10 @@ function CrosshairMarker({
   );
 }
 
-// The pass-2 bounding box [x0,y0,x1,y1] (normalized 0..COORDINATE_BASE) drawn
-// as a rectangle over the zoom crop, so you can see whether the model boxed the
-// glyph or swallowed the text label. Positioned by percentage like the
-// crosshair, so it tracks the image at any rendered size.
+// A bounding box [x0,y0,x1,y1] (normalized 0..COORDINATE_BASE) drawn as a
+// rectangle over a screenshot or zoom crop, so you can see whether the model
+// boxed the glyph or swallowed the text label. Positioned by percentage like
+// the crosshair, so it tracks the image at any rendered size.
 function BoxMarker({ box }: { box?: number[] }) {
   if (!box || box.length < 4) return null;
   const x0 = Math.min(box[0], box[2]);
@@ -309,9 +309,10 @@ export function ChatHistory({ messages, expandThinkingByDefault = false, debugMo
                     <img
                       src={`data:image/png;base64,${message.screenshot}`}
                       alt="Screenshot"
-                      onClick={() => openScreenshot(message.screenshot!, message.action?.arguments?.coordinate)}
+                      onClick={() => openScreenshot(message.screenshot!, message.action?.arguments?.coordinate, message.screenshotBox)}
                       className="max-w-[200px] rounded-lg border border-dark-600 opacity-75 hover:opacity-100 transition-opacity cursor-pointer"
                     />
+                    <BoxMarker box={message.screenshotBox} />
                     <CrosshairMarker coordinate={message.action?.arguments?.coordinate} />
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity">
                       <div className="bg-black/50 p-2 rounded-full backdrop-blur-sm">

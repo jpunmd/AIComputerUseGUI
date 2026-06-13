@@ -59,7 +59,7 @@ const DEFAULT_SETTINGS: Settings = {
   autoApproveConfirmations: false, // When true, skip the confirmation dialog for sensitive actions
   zoomRefine: false, // Off by default; two-pass adds a second API call per click
   zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
-  boxRefine: false, // Pass 2 clicks a point by default; box-center is opt-in for A/B testing
+  boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default
 };
 

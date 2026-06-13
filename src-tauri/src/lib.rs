@@ -99,6 +99,12 @@ async fn refine_coordinate(
     .map_err(|e| e.to_string())
 }
 
+/// Abort any in-flight inference request (user pressed Stop mid-generation)
+#[tauri::command]
+fn cancel_inference() {
+    api::cancel_inference();
+}
+
 /// Execute an action on the computer
 #[tauri::command]
 async fn execute_action(action: String, coordinate_base: Option<f64>) -> Result<(), String> {
@@ -148,6 +154,7 @@ pub fn run() {
             capture_screenshot_with_metadata,
             process_computer_use,
             refine_coordinate,
+            cancel_inference,
             execute_action,
             test_api_connection,
             fetch_available_models,
