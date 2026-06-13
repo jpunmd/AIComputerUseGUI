@@ -31,6 +31,7 @@ function App() {
     error,
     currentTurn,
     isMultiTurnRunning,
+    isStopping,
     pendingConfirmation,
     processQuery,
     executeAction,
@@ -203,11 +204,12 @@ function App() {
           {isMultiTurnRunning && (
             <button
               onClick={stopMultiTurn}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 transition-all"
+              disabled={isStopping}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 transition-all disabled:opacity-60 disabled:cursor-wait"
               title="Stop multi-turn execution"
             >
-              <StopCircle className="w-4 h-4" />
-              <span className="text-sm">Stop</span>
+              <StopCircle className={`w-4 h-4 ${isStopping ? 'animate-pulse' : ''}`} />
+              <span className="text-sm">{isStopping ? 'Stopping…' : 'Stop'}</span>
             </button>
           )}
 

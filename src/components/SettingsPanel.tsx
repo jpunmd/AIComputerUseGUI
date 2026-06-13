@@ -362,22 +362,21 @@ export function SettingsPanel({
             </p>
           </div>
 
-          {/* Box-center refine - only relevant when refine is on */}
+          {/* Bounding-box clicks - works standalone or as the pass-2 format */}
           <div className="flex items-center justify-between">
             <div className="pr-4">
               <label className="block text-sm font-medium text-dark-300">
-                Refine with Bounding Box
+                Click with Bounding Box
               </label>
               <p className="text-xs text-dark-500">
-                Pass 2 returns a tight box around the glyph (excluding its text label) and clicks the box center, instead of predicting a point. Taps Gemma's native detection format. A/B it against point mode with the calibration probe.
+                Instead of picking a single point, the model outlines the target with a box and the click lands at its center. Often more accurate on small icons and buttons. Works on its own or combined with Zoom Refine.
               </p>
             </div>
             <button
               onClick={() => onUpdateSettings({ boxRefine: !settings.boxRefine })}
-              disabled={!settings.zoomRefine}
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
                 settings.boxRefine ? 'bg-primary-500' : 'bg-dark-600'
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
+              }`}
             >
               <span
                 className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${

@@ -27,6 +27,18 @@ interface PriorTurn {
   assistant_thinking?: string;
 }
 
+// Appended to the system prompt when bounding-box clicks are on but zoom refine
+// is off, so the single grounding pass returns a box we click the center of.
+// (With zoom refine on, pass 2 carries the box instructions instead — see
+// refine_coordinate in the backend.)
+const BOX_CLICK_ADDENDUM = `
+
+# Bounding Box Click Targeting
+- For click actions (click, left_click, right_click, double_click), return "coordinate" as a TIGHT bounding box [x0, y0, x1, y1] around the clickable element itself — top-left corner then bottom-right corner, in the same normalized 0-1000 space
+- Box only the clickable element (icon glyph, button, or input field); do NOT include a text label or caption beside or beneath an icon
+- The click will be performed at the center of your box
+- All other actions keep their normal arguments`;
+
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentScreenshot, setCurrentScreenshot] = useState<string | null>(null);
@@ -34,6 +46,7 @@ export function useAgent() {
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
   const [isMultiTurnRunning, setIsMultiTurnRunning] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null);
   const stopRequestedRef = useRef(false);
   const confirmationResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
@@ -111,6 +124,10 @@ export function useAgent() {
         setMessages(prev => [...prev, userMessage]);
       }
 
+      // Box mode applies to whichever pass does the final grounding: pass 2
+      // when zoom refine is on, otherwise pass 1 via a system prompt addendum.
+      const boxFirstPass = settings.boxRefine && !settings.zoomRefine;
+
       // Send to backend with screenshot history for context
       // Pass IMAGE dimensions (not screen dimensions) so model's coordinate system matches
       const response = await invoke<AgentResponse>('process_computer_use', {
@@ -120,7 +137,7 @@ export function useAgent() {
         modelId: settings.modelId,
         displayWidth: imageWidth,
         displayHeight: imageHeight,
-        systemPrompt: settings.systemPrompt,
+        systemPrompt: boxFirstPass ? settings.systemPrompt + BOX_CLICK_ADDENDUM : settings.systemPrompt,
         screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
         enableThinking: settings.enableThinking,
         priorTurns: priorTurns && priorTurns.length > 0 ? priorTurns : null,
@@ -133,11 +150,27 @@ export function useAgent() {
       let zoomCrop: string | undefined;
       let zoomCropCoordinate: number[] | undefined;
       let zoomCropBox: number[] | undefined;
-      const coord = response.action?.arguments?.coordinate;
       const refinable = ['click', 'left_click', 'right_click', 'double_click'].includes(
         response.action?.action ?? ''
       );
-      if (settings.zoomRefine && refinable && coord && coord.length >= 2) {
+
+      // Single-pass box mode: collapse the model's [x0,y0,x1,y1] box to its
+      // center so execution and the crosshair overlay click one point. Keep the
+      // raw box to draw on the screenshot in the chat history.
+      let screenshotBox: number[] | undefined;
+      const rawCoord = response.action?.arguments?.coordinate;
+      if (boxFirstPass && refinable && rawCoord && rawCoord.length >= 4) {
+        screenshotBox = rawCoord.slice(0, 4);
+        response.action.arguments.coordinate = [
+          (rawCoord[0] + rawCoord[2]) / 2,
+          (rawCoord[1] + rawCoord[3]) / 2,
+        ];
+      }
+
+      // Skip the second API call if the user already pressed Stop — the action
+      // won't be executed anyway.
+      const coord = response.action?.arguments?.coordinate;
+      if (settings.zoomRefine && !stopRequestedRef.current && refinable && coord && coord.length >= 2) {
         try {
           const refined = await invoke<{ coordinate: number[]; crop_coordinate: number[]; crop_box: number[]; crop_image: string; refined: boolean }>(
             'refine_coordinate',
@@ -178,6 +211,7 @@ export function useAgent() {
         zoomCrop,
         zoomCropCoordinate,
         zoomCropBox,
+        screenshotBox,
       };
       setMessages(prev => [...prev, assistantMessage]);
 
@@ -246,6 +280,7 @@ export function useAgent() {
   ): Promise<void> => {
     setIsProcessing(true);
     setIsMultiTurnRunning(true);
+    setIsStopping(false);
     setError(null);
     setCurrentTurn(0);
     stopRequestedRef.current = false;
@@ -256,8 +291,11 @@ export function useAgent() {
     // in this same run (the settings prop is a snapshot taken at call time)
     let autoApprove = settings.autoApproveConfirmations;
 
+    // Outside the try so the catch can report how many steps completed when a
+    // stop aborts the in-flight inference call.
+    let turn = 0;
+
     try {
-      let turn = 0;
       let currentQuery = query;
       let isFollowUp = false;
       const actionHistory: string[] = []; // Track executed actions only
@@ -314,6 +352,12 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
 
         if (!response?.success) {
           throw new Error(response?.error || 'Failed to get response');
+        }
+
+        // Stop pressed while inference was running: discard the action this
+        // turn produced instead of executing it.
+        if (stopRequestedRef.current) {
+          break;
         }
 
         // Record this turn so the next call gets full conversation history
@@ -438,8 +482,11 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
         // Add to action history for context
         actionHistory.push(actionDescription);
 
-        // Wait for UI to update after action
-        await delay(settings.actionDelayMs);
+        // Wait for UI to update after action — in short slices so a Stop press
+        // takes effect within ~100ms instead of after the full delay
+        for (let waited = 0; waited < settings.actionDelayMs && !stopRequestedRef.current; waited += 100) {
+          await delay(Math.min(100, settings.actionDelayMs - waited));
+        }
 
         turn++;
         isFollowUp = true;
@@ -467,25 +514,44 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(errorMessage);
-      
-      const errorAssistantMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: `Error: ${errorMessage}`,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, errorAssistantMessage]);
+
+      // A Stop press aborts the in-flight inference call, which surfaces here
+      // as a rejected invoke ("inference cancelled") — report it as a stop,
+      // not an error.
+      if (stopRequestedRef.current) {
+        const stoppedMessage: Message = {
+          id: crypto.randomUUID(),
+          role: 'system',
+          content: `⏹ Multi-turn execution stopped by user after ${turn} step${turn === 1 ? '' : 's'}`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, stoppedMessage]);
+      } else {
+        setError(errorMessage);
+
+        const errorAssistantMessage: Message = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Error: ${errorMessage}`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorAssistantMessage]);
+      }
     } finally {
       setIsProcessing(false);
       setIsMultiTurnRunning(false);
+      setIsStopping(false);
       setCurrentTurn(0);
     }
   }, [captureScreenshotWithMetadata, executeAction, processSingleTurn]);
 
-  // Stop multi-turn execution
+  // Stop multi-turn execution. Besides setting the flag the loop polls, abort
+  // any in-flight inference request on the backend so the stop takes effect
+  // immediately instead of after the model finishes generating.
   const stopMultiTurn = useCallback(() => {
     stopRequestedRef.current = true;
+    setIsStopping(true);
+    invoke('cancel_inference').catch(() => {});
   }, []);
 
   const clearMessages = useCallback(() => {
@@ -516,6 +582,7 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
     error,
     currentTurn,
     isMultiTurnRunning,
+    isStopping,
     pendingConfirmation,
     captureScreenshot,
     processQuery,

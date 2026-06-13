@@ -12,7 +12,7 @@ export interface Settings {
   autoApproveConfirmations: boolean; // Skip confirmation prompts for sensitive actions
   zoomRefine: boolean; // Two-pass coarse-to-fine: re-click on a zoomed crop for precision
   zoomCropFraction: number; // Crop window size as a fraction of the screen (e.g. 0.3)
-  boxRefine: boolean; // Pass 2 returns a bounding box of the glyph; we click its center
+  boxRefine: boolean; // Model returns a bounding box of the target; we click its center. Applies to the final grounding pass (pass 2 when zoomRefine is on, pass 1 otherwise)
   debugMode: boolean; // Show developer instruments (the calibration probe in the expanded screenshot view)
 }
 
@@ -56,6 +56,7 @@ export interface Message {
   zoomCrop?: string; // Base64 of the zoomed crop the refine pass looked at
   zoomCropCoordinate?: number[]; // Pass-2 click in 0-1000 over the crop image (for the crosshair)
   zoomCropBox?: number[]; // Pass-2 bounding box [x0,y0,x1,y1] in 0-1000 over the crop (box mode)
+  screenshotBox?: number[]; // Pass-1 bounding box [x0,y0,x1,y1] in 0-1000 over the screenshot (box mode without zoom refine)
 }
 
 // Serializable version of Message for storage (Date as ISO string)
@@ -71,6 +72,7 @@ export interface SerializedMessage {
   zoomCrop?: string;
   zoomCropCoordinate?: number[];
   zoomCropBox?: number[];
+  screenshotBox?: number[];
 }
 
 // A saved chat session

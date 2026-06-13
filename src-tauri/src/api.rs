@@ -1,7 +1,9 @@
 use crate::types::*;
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::OnceLock;
 use thiserror::Error;
+use tokio::sync::Notify;
 
 #[derive(Error, Debug)]
 pub enum ApiError {
@@ -11,6 +13,23 @@ pub enum ApiError {
     ParseError(String),
     #[error("API returned an error: {0}")]
     ApiResponseError(String),
+    #[error("inference cancelled")]
+    Cancelled,
+}
+
+// Wakes any in-flight inference request when the user presses Stop, so the
+// abort takes effect immediately instead of after the model finishes
+// generating. notify_waiters() only wakes CURRENT waiters — a stop pressed
+// while nothing is in flight doesn't poison the next request.
+static CANCEL_NOTIFY: OnceLock<Notify> = OnceLock::new();
+
+fn cancel_notify() -> &'static Notify {
+    CANCEL_NOTIFY.get_or_init(Notify::new)
+}
+
+/// Abort any in-flight inference request (drops the HTTP future).
+pub fn cancel_inference() {
+    cancel_notify().notify_waiters();
 }
 
 /// Maximum number of recent screenshots to include for context
@@ -150,20 +169,27 @@ pub async fn call_computer_use_api(
         },
     };
     
-    // Make the API request
+    // Make the API request. Racing against the cancel signal lets a Stop press
+    // drop the request mid-generation instead of waiting out the inference.
     let endpoint = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
-    let response = client
-        .post(&endpoint)
-        .json(&request)
-        .send()
-        .await?;
-    
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(ApiError::ApiResponseError(error_text));
-    }
-    
-    let chat_response: ChatResponse = response.json().await?;
+    let request_future = async {
+        let response = client
+            .post(&endpoint)
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ApiError::ApiResponseError(error_text));
+        }
+
+        Ok(response.json::<ChatResponse>().await?)
+    };
+    let chat_response: ChatResponse = tokio::select! {
+        result = request_future => result?,
+        _ = cancel_notify().notified() => return Err(ApiError::Cancelled),
+    };
 
     // Parse the response
     let raw_output_text = chat_response
@@ -392,6 +418,9 @@ pub async fn refine_coordinate(
     .await
     {
         Ok(resp) => resp,
+        // A user-requested stop should abort the whole turn, not fall back to
+        // the coarse coordinate (which would then get clicked).
+        Err(ApiError::Cancelled) => return Err(ApiError::Cancelled),
         Err(e) => {
             println!("Refine pass-2 inference failed ({}); keeping coarse, returning crop", e);
             return Ok(RefineResult {
