@@ -35,24 +35,36 @@ export function useSessions() {
     }
   }, []);
 
-  // Save sessions to localStorage whenever they change
-  const persistSessions = useCallback((newSessions: ChatSession[]) => {
+  // Save sessions to localStorage whenever they change. Returns false (and
+  // leaves state untouched) when the write fails — typically QuotaExceededError
+  // from screenshot-heavy sessions — so callers can surface the failure
+  // instead of silently losing the session.
+  const persistSessions = useCallback((newSessions: ChatSession[]): boolean => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newSessions));
       setSessions(newSessions);
+      return true;
     } catch (err) {
       console.error('Failed to save sessions:', err);
+      return false;
     }
   }, []);
 
+  // Outcome of a save attempt: `session` is null when nothing could be
+  // persisted; `slimmed` is true when it only fit after dropping images.
+  interface SaveResult {
+    session: ChatSession | null;
+    slimmed: boolean;
+  }
+
   // Save current chat as a new session
-  const saveSession = useCallback((messages: Message[], name?: string): ChatSession => {
+  const saveSession = useCallback((messages: Message[], name?: string): SaveResult => {
     const now = new Date().toISOString();
-    
+
     // Try to get initial query from first user message
     const firstUserMessage = messages.find(m => m.role === 'user');
     const initialQuery = firstUserMessage?.content || 'Untitled Session';
-    
+
     const session: ChatSession = {
       id: crypto.randomUUID(),
       name: name || initialQuery.slice(0, 50) + (initialQuery.length > 50 ? '...' : ''),
@@ -62,9 +74,21 @@ export function useSessions() {
       initialQuery,
     };
 
-    const newSessions = [session, ...sessions];
-    persistSessions(newSessions);
-    return session;
+    if (persistSessions([session, ...sessions])) {
+      return { session, slimmed: false };
+    }
+
+    // Full session didn't fit (localStorage quota). Retry without the base64
+    // images — text, actions, and thinking are the valuable part of a session.
+    const slimSession: ChatSession = {
+      ...session,
+      messages: session.messages.map(({ screenshot, zoomCrop, ...rest }) => rest),
+    };
+    if (persistSessions([slimSession, ...sessions])) {
+      return { session: slimSession, slimmed: true };
+    }
+
+    return { session: null, slimmed: false };
   }, [sessions, persistSessions]);
 
   // Delete a session

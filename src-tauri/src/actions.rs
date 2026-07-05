@@ -221,6 +221,13 @@ pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u
             // Done action - signals task completion, no-op here
             println!("Task marked as done by the model");
         }
+
+        "none" => {
+            // Conversational response with no computer action — the frontend
+            // ends the run on "none", but keep a no-op arm so a stray dispatch
+            // can't fail the whole task.
+            println!("No-op action 'none' (conversational response)");
+        }
         
         "confirm" => {
             // Confirm action - signals need for user confirmation before proceeding
@@ -258,30 +265,36 @@ fn execute_key_sequence(enigo: &mut Enigo, key_str: &str) -> Result<(), ActionEr
                 ActionError::ExecutionError(format!("Key press failed: {}", e))
             })?;
     } else {
-        // Key combination (e.g., ctrl+c)
-        let mut modifiers = Vec::new();
-        let main_key = parts.last().ok_or_else(|| ActionError::InvalidAction("Empty key sequence".to_string()))?;
-        
-        // Press modifiers
-        for part in &parts[..parts.len()-1] {
-            let modifier = parse_key(part)?;
-            modifiers.push(modifier);
-            enigo.key(modifier, Direction::Press)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+        // Key combination (e.g., ctrl+c). Parse every part BEFORE pressing
+        // anything so an unknown key name can't leave modifiers held down.
+        let mut keys: Vec<Key> = parts
+            .iter()
+            .map(|part| parse_key(part))
+            .collect::<Result<_, _>>()?;
+        let main_key = keys.pop().ok_or_else(|| ActionError::InvalidAction("Empty key sequence".to_string()))?;
+
+        // Press modifiers, then the main key. If anything fails mid-sequence,
+        // release whatever was already pressed — a stuck Ctrl/Alt/Shift/Win
+        // would otherwise corrupt the user's real keyboard state.
+        let mut pressed: Vec<Key> = Vec::new();
+        let result = (|| {
+            for modifier in &keys {
+                enigo.key(*modifier, Direction::Press)
+                    .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+                pressed.push(*modifier);
+            }
+            enigo.key(main_key, Direction::Click)
+                .map_err(|e| ActionError::ExecutionError(e.to_string()))
+        })();
+
+        // Release modifiers in reverse order on both success and failure,
+        // ignoring release errors so the first failure is what gets reported.
+        for modifier in pressed.into_iter().rev() {
+            let _ = enigo.key(modifier, Direction::Release);
         }
-        
-        // Press and release main key
-        let key = parse_key(main_key)?;
-        enigo.key(key, Direction::Click)
-            .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-        
-        // Release modifiers in reverse order
-        for modifier in modifiers.into_iter().rev() {
-            enigo.key(modifier, Direction::Release)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-        }
+        result?;
     }
-    
+
     Ok(())
 }
 
@@ -308,6 +321,17 @@ fn parse_key(key_str: &str) -> Result<Key, ActionError> {
         "alt" => Key::Alt,
         "shift" => Key::Shift,
         "meta" | "win" | "cmd" | "command" => Key::Meta,
+        "capslock" => Key::CapsLock,
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+        "insert" | "ins" => Key::Insert,
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+        "numlock" => Key::Numlock,
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+        "pause" | "break" => Key::Pause,
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+        "printscreen" | "prtsc" | "prtscn" | "print_screen" => Key::PrintScr,
+        #[cfg(target_os = "windows")]
+        "menu" | "apps" | "contextmenu" => Key::Apps,
         "f1" => Key::F1,
         "f2" => Key::F2,
         "f3" => Key::F3,

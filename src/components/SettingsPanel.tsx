@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server, RefreshCw, FileText } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Settings } from '../types';
@@ -26,6 +26,9 @@ export function SettingsPanel({
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [modelFetchError, setModelFetchError] = useState<string | null>(null);
+  // Monotonic id per fetch so a slow response for an old endpoint can't
+  // overwrite the results of a newer request.
+  const fetchSeqRef = useRef(0);
 
   const handleTestConnection = async () => {
     setIsTesting(true);
@@ -37,31 +40,36 @@ export function SettingsPanel({
   };
 
   const fetchModels = async () => {
+    const seq = ++fetchSeqRef.current;
     setIsFetchingModels(true);
     setModelFetchError(null);
     try {
       const models = await invoke<string[]>('fetch_available_models', {
         apiEndpoint: settings.apiEndpoint,
       });
+      if (seq !== fetchSeqRef.current) return; // Stale response — ignore
+      // Never auto-replace the configured model: an ID missing from the list
+      // may still be valid (proxies and some servers don't list everything).
+      // The select below shows it as an extra option instead.
       setAvailableModels(models);
-      // If current model is not in list and we have models, select the first one
-      if (models.length > 0 && !models.includes(settings.modelId)) {
-        onUpdateSettings({ modelId: models[0] });
-      }
     } catch (err) {
+      if (seq !== fetchSeqRef.current) return; // Stale response — ignore
       const errorMessage = err instanceof Error ? err.message : String(err);
       setModelFetchError(errorMessage);
       setAvailableModels([]);
     } finally {
-      setIsFetchingModels(false);
+      if (seq === fetchSeqRef.current) {
+        setIsFetchingModels(false);
+      }
     }
   };
 
-  // Fetch models when the panel opens or endpoint changes
+  // Fetch models when the panel opens or the endpoint changes. Debounced so
+  // typing in the endpoint field doesn't fire a request per keystroke.
   useEffect(() => {
-    if (isOpen && settings.apiEndpoint) {
-      fetchModels();
-    }
+    if (!isOpen || !settings.apiEndpoint) return;
+    const timer = setTimeout(fetchModels, 400);
+    return () => clearTimeout(timer);
   }, [isOpen, settings.apiEndpoint]);
 
   if (!isOpen) return null;
@@ -128,6 +136,11 @@ export function SettingsPanel({
                 onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
                 className="w-full px-4 py-3 bg-dark-800 border border-dark-600 rounded-lg text-white focus:border-primary-500 transition-colors"
               >
+                {!availableModels.includes(settings.modelId) && (
+                  <option value={settings.modelId}>
+                    {settings.modelId} (current, not in server list)
+                  </option>
+                )}
                 {availableModels.map((model) => (
                   <option key={model} value={model}>
                     {model}

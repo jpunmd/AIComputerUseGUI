@@ -50,7 +50,6 @@ export function useAgent() {
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null);
   const stopRequestedRef = useRef(false);
   const confirmationResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
-  const screenshotHistoryRef = useRef<string[]>([]); // Track screenshots for current task
   const priorTurnsRef = useRef<PriorTurn[]>([]); // Conversation history for thinking preservation
 
   // Capture screenshot with metadata (dimensions)
@@ -108,8 +107,11 @@ export function useAgent() {
     imageHeight: number,
     isFollowUp: boolean = false,
     stepNumber?: number,
-    screenshotHistory?: string[],
-    priorTurns?: PriorTurn[]
+    priorTurns?: PriorTurn[],
+    // The user's original task, for the zoom-refine pass. Follow-up turns wrap
+    // the task in action history and meta-instructions that would only confuse
+    // pass 2's "Goal:" prompt.
+    originalGoal?: string
   ): Promise<AgentResponse | null> => {
     try {
       // Add user message only for initial query
@@ -128,7 +130,7 @@ export function useAgent() {
       // when zoom refine is on, otherwise pass 1 via a system prompt addendum.
       const boxFirstPass = settings.boxRefine && !settings.zoomRefine;
 
-      // Send to backend with screenshot history for context
+      // Send to backend.
       // Pass IMAGE dimensions (not screen dimensions) so model's coordinate system matches
       const response = await invoke<AgentResponse>('process_computer_use', {
         screenshotBase64: screenshot,
@@ -138,7 +140,6 @@ export function useAgent() {
         displayWidth: imageWidth,
         displayHeight: imageHeight,
         systemPrompt: boxFirstPass ? settings.systemPrompt + BOX_CLICK_ADDENDUM : settings.systemPrompt,
-        screenshotHistory: screenshotHistory && screenshotHistory.length > 0 ? screenshotHistory : null,
         enableThinking: settings.enableThinking,
         priorTurns: priorTurns && priorTurns.length > 0 ? priorTurns : null,
       });
@@ -180,7 +181,7 @@ export function useAgent() {
               coarseX: coord[0],
               coarseY: coord[1],
               actionType: response.action.action,
-              query,
+              query: originalGoal ?? query,
               cropFraction: settings.zoomCropFraction,
               maxDimension: settings.screenshotMaxDimension,
               enableThinking: settings.enableThinking,
@@ -284,7 +285,6 @@ export function useAgent() {
     setError(null);
     setCurrentTurn(0);
     stopRequestedRef.current = false;
-    screenshotHistoryRef.current = []; // Clear screenshot history for new task
     priorTurnsRef.current = []; // Clear conversation history for new task
 
     // Local override so a mid-run "Always Allow" applies to subsequent confirms
@@ -333,7 +333,7 @@ The screenshot shows the CURRENT state. What is the single NEXT action to take?
 Remember: Output exactly ONE action per response. If the goal is complete, use "done".`;
         }
 
-        // Process single turn with screenshot history for context
+        // Process single turn.
         // Pass IMAGE dimensions so model's coordinates match the image it sees
         const response = await processSingleTurn(
           currentQuery,
@@ -343,12 +343,9 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
           capture.imageHeight,
           isFollowUp,
           turn + 1, // Step number for display
-          screenshotHistoryRef.current, // Pass screenshot history for context
-          priorTurnsRef.current // Conversation history (with thinking) for continuity
+          priorTurnsRef.current, // Conversation history (with thinking) for continuity
+          query // Original goal for the zoom-refine pass
         );
-
-        // Add current screenshot to history for next turn
-        screenshotHistoryRef.current.push(capture.base64);
 
         if (!response?.success) {
           throw new Error(response?.error || 'Failed to get response');
@@ -380,6 +377,20 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
           break;
         }
 
+        // Conversational reply with no computer action (e.g. the model answered
+        // an information question in text). There is nothing to execute — end
+        // the run instead of erroring on an unknown action.
+        if (response.action.action === 'none') {
+          const answeredMessage: Message = {
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: `✓ Model answered in text — no action to execute`,
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, answeredMessage]);
+          break;
+        }
+
         // Check if confirmation is needed
         if (response.action.action === 'confirm') {
           const confirmMessage = response.action.arguments?.text || 'The AI wants to perform a potentially risky action. Proceed?';
@@ -393,6 +404,9 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
               timestamp: new Date(),
             };
             setMessages(prev => [...prev, autoMessage]);
+            // Record the approval so the next turn's context tells the model to
+            // proceed — otherwise it may just ask to confirm again.
+            actionHistory.push(`confirm ("${confirmMessage}") — APPROVED by user, proceed with the action`);
             turn++;
             isFollowUp = true;
             continue;
@@ -450,8 +464,10 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
             timestamp: new Date(),
           };
           setMessages(prev => [...prev, approvedMessage]);
-          
-          // Don't add confirm to action history, just continue to get next action
+
+          // Record the approval so the next turn's context tells the model to
+          // proceed — otherwise it may just ask to confirm again.
+          actionHistory.push(`confirm ("${confirmMessage}") — APPROVED by user, proceed with the action`);
           turn++;
           isFollowUp = true;
           continue;
@@ -492,7 +508,9 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
         isFollowUp = true;
       }
 
-      if (turn >= settings.maxTurns) {
+      // Only report hitting the turn cap when the run wasn't stopped by the
+      // user — a stop on the final turn would otherwise show both messages.
+      if (turn >= settings.maxTurns && !stopRequestedRef.current) {
         const maxTurnsMessage: Message = {
           id: crypto.randomUUID(),
           role: 'system',
@@ -558,7 +576,6 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
     setMessages([]);
     setCurrentScreenshot(null);
     setCurrentTurn(0);
-    screenshotHistoryRef.current = []; // Clear screenshot history
     priorTurnsRef.current = []; // Clear conversation history
   }, []);
 

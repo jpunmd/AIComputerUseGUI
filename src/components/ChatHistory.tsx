@@ -295,8 +295,9 @@ export function ChatHistory({ messages, expandThinkingByDefault = false, debugMo
                   <p className="text-sm whitespace-pre-wrap">{message.role === 'assistant' ? cleanContent(message.content) : message.content}</p>
                 </div>
 
-                {/* Action badge */}
-                {message.action && (
+                {/* Action badge — hidden for "none" (conversational reply),
+                    whose text argument just duplicates the message content */}
+                {message.action && message.action.action !== 'none' && (
                   <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-dark-800 border border-dark-600 rounded-lg text-xs text-dark-300">
                     {getActionIcon(message.action)}
                     <span>{formatAction(message.action)}</span>

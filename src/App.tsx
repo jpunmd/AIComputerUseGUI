@@ -87,15 +87,20 @@ function App() {
     if (prevIsMultiTurnRunning.current && !isMultiTurnRunning && messages.length > 0) {
       // Check if the last message indicates completion (not an error)
       const lastMessage = messages[messages.length - 1];
-      if (lastMessage.role === 'system' && 
-          (lastMessage.content.includes('✓ Task completed') || 
+      if (lastMessage.role === 'system' &&
+          (lastMessage.content.includes('✓ Task completed') ||
            lastMessage.content.includes('stopped by user') ||
            lastMessage.content.includes('Action denied'))) {
-        saveSession(messages);
+        const result = saveSession(messages);
+        if (!result.session) {
+          setError('Failed to auto-save session: browser storage is full. Delete old sessions to free space.');
+        } else if (result.slimmed) {
+          setError('Session auto-saved without screenshots — browser storage is nearly full.');
+        }
       }
     }
     prevIsMultiTurnRunning.current = isMultiTurnRunning;
-  }, [isMultiTurnRunning, messages, saveSession]);
+  }, [isMultiTurnRunning, messages, saveSession, setError]);
 
   const handleTestConnection = async (): Promise<boolean> => {
     const result = await testConnection(settings);
@@ -122,18 +127,22 @@ function App() {
     }
 
     if (multiTurnMode) {
-      // Multi-turn mode: run until task is complete
+      // Multi-turn mode: run until task is complete. Connection status is
+      // handled by the periodic check — a failed run shouldn't show Connected.
       await runMultiTurn(query, settings, () => updateSettings({ autoApproveConfirmations: true }));
-      setIsConnected(true);
     } else {
       // Single-turn mode: just get one action
       const response = await processQuery(query, settings);
-      
+
       if (response?.success && response.action) {
         setIsConnected(true);
-        setLastAction(response.action);
-        if (autoExecute) {
-          await handleExecuteAction(response.action);
+        // "none" (conversational reply) and "done" have nothing to execute —
+        // don't offer an Execute button that would just error.
+        if (!['none', 'done'].includes(response.action.action)) {
+          setLastAction(response.action);
+          if (autoExecute) {
+            await handleExecuteAction(response.action);
+          }
         }
       } else if (response === null) {
         setIsConnected(false);
@@ -247,7 +256,14 @@ function App() {
           <button
             onClick={() => {
               if (messages.length > 0) {
-                saveSession(messages);
+                const result = saveSession(messages);
+                if (!result.session) {
+                  setError('Failed to save session: browser storage is full. Delete old sessions to free space.');
+                  return;
+                }
+                if (result.slimmed) {
+                  setError('Session saved without screenshots — browser storage is nearly full.');
+                }
                 setActiveTab('history');
               }
             }}

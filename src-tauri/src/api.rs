@@ -59,8 +59,14 @@ pub async fn call_computer_use_api(
         println!("Screenshot history count: {}", screenshot_history.as_ref().map(|h| h.len()).unwrap_or(0));
     }
     
-    let client = Client::new();
-    
+    // Connect timeout catches an unreachable server quickly; the overall
+    // timeout is generous because local VLM inference on large images can
+    // legitimately take minutes. Stop still cancels mid-request either way.
+    let client = Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(600))
+        .build()?;
+
     #[cfg(debug_assertions)]
     println!("System prompt length: {} chars", system_prompt.len());
     
@@ -207,9 +213,37 @@ pub async fn call_computer_use_api(
     // reasoning separately.
     let (output_text, inline_thinking) = extract_think_tags(&raw_output_text);
 
+    // Extract thinking/reasoning early so the action parser can fall back to it.
+    let reasoning_content = chat_response
+        .choices
+        .first()
+        .and_then(|c| c.message.reasoning_content.clone())
+        .filter(|s| !s.trim().is_empty());
+
     // Extract the action from the tool_call
-    let action = parse_tool_call(&output_text)?;
-    
+    let mut action = parse_tool_call(&output_text)?;
+
+    // Thinking models sometimes emit the tool_call INSIDE the <think> block or
+    // reasoning channel, leaving the visible text empty. Before treating the
+    // reply as conversational, look for a tool_call there. The contains() guard
+    // keeps the phrase-based "done" fallback from misfiring on reasoning prose.
+    if action.action == "none" {
+        for source in [reasoning_content.as_deref(), inline_thinking.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if source.contains("<tool_call>") {
+                if let Ok(rescued) = parse_tool_call(source) {
+                    if rescued.action != "none" {
+                        println!("Rescued tool_call from thinking content: {}", rescued.action);
+                        action = rescued;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(debug_assertions)]
     println!("Parsed action: {}", action.action);
     
@@ -234,17 +268,10 @@ pub async fn call_computer_use_api(
         }
     });
     
-    // Extract thinking/reasoning from the response.
-    // Priority:
+    // Thinking priority for display:
     //   1. reasoning_content field (vLLM, llama.cpp with reasoning_format=deepseek)
     //   2. inline <think>...</think> tags (llama.cpp with reasoning_format=none)
     //   3. text before <tool_call> as a last-resort fallback
-    let reasoning_content = chat_response
-        .choices
-        .first()
-        .and_then(|c| c.message.reasoning_content.clone())
-        .filter(|s| !s.trim().is_empty());
-
     #[cfg(debug_assertions)]
     println!(
         "Thinking sources -> reasoning_content: {}, inline <think>: {}",

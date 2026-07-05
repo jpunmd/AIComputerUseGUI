@@ -31,6 +31,9 @@ export function CommandInput({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
+              // Don't submit while an IME composition is in progress (CJK
+              // input) — Enter there confirms the composition, not the message.
+              if (e.nativeEvent.isComposing) return;
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 if (query.trim() && !isProcessing && !disabled) {
