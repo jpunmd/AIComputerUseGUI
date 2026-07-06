@@ -71,13 +71,15 @@ function App() {
     return () => clearInterval(interval);
   }, [testConnection]);
 
-  // Re-test when settings change
+  // Re-test when the endpoint/model changes — debounced so typing in the
+  // settings panel doesn't fire a request per keystroke; the check runs once
+  // the user pauses. (Settings themselves still save live.)
   useEffect(() => {
-    const checkConnection = async () => {
-      const result = await testConnection(settings);
+    const timer = setTimeout(async () => {
+      const result = await testConnection(settingsRef.current);
       setIsConnected(result);
-    };
-    checkConnection();
+    }, 800);
+    return () => clearTimeout(timer);
   }, [settings.apiEndpoint, settings.modelId, testConnection]);
 
   // Auto-save session when task completes (multi-turn mode finishes)
@@ -91,12 +93,16 @@ function App() {
           (lastMessage.content.includes('✓ Task completed') ||
            lastMessage.content.includes('stopped by user') ||
            lastMessage.content.includes('Action denied'))) {
-        const result = saveSession(messages);
-        if (!result.session) {
-          setError('Failed to auto-save session: browser storage is full. Delete old sessions to free space.');
-        } else if (result.slimmed) {
-          setError('Session auto-saved without screenshots — browser storage is nearly full.');
-        }
+        (async () => {
+          const result = await saveSession(messages, {
+            includeScreenshots: settingsRef.current.saveScreenshotsInSessions,
+          });
+          if (!result.session) {
+            setError('Failed to auto-save session — see the console for details.');
+          } else if (result.slimmed) {
+            setError('Session auto-saved without screenshots — storage is nearly full.');
+          }
+        })();
       }
     }
     prevIsMultiTurnRunning.current = isMultiTurnRunning;
@@ -254,15 +260,17 @@ function App() {
 
           {/* Save session */}
           <button
-            onClick={() => {
+            onClick={async () => {
               if (messages.length > 0) {
-                const result = saveSession(messages);
+                const result = await saveSession(messages, {
+                  includeScreenshots: settings.saveScreenshotsInSessions,
+                });
                 if (!result.session) {
-                  setError('Failed to save session: browser storage is full. Delete old sessions to free space.');
+                  setError('Failed to save session — see the console for details.');
                   return;
                 }
                 if (result.slimmed) {
-                  setError('Session saved without screenshots — browser storage is nearly full.');
+                  setError('Session saved without screenshots — storage is nearly full.');
                 }
                 setActiveTab('history');
               }

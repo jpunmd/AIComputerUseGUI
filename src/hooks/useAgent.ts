@@ -585,9 +585,10 @@ Remember: Output exactly ONE action per response. If the goal is complete, use "
         apiEndpoint: settings.apiEndpoint,
       });
       return result;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Connection test failed: ${errorMessage}`);
+    } catch {
+      // Connection checks run on a timer and while the user edits the endpoint
+      // in settings — don't raise the global error toast for them. The status
+      // bar and the settings panel's Test button already surface failures.
       return false;
     }
   }, []);

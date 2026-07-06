@@ -330,6 +330,30 @@ export function SettingsPanel({
             </p>
           </div>
 
+          {/* Save screenshots in sessions */}
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <label className="block text-sm font-medium text-dark-300">
+                Save Screenshots in Sessions
+              </label>
+              <p className="text-xs text-dark-500">
+                Include screenshots and zoom crops when saving sessions to history. Turn off to save text, actions, and thinking only — sessions stay tiny.
+              </p>
+            </div>
+            <button
+              onClick={() => onUpdateSettings({ saveScreenshotsInSessions: !settings.saveScreenshotsInSessions })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                settings.saveScreenshotsInSessions ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.saveScreenshotsInSessions ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Zoom Refine (two-pass coarse-to-fine) */}
           <div className="flex items-center justify-between">
             <div className="pr-4">

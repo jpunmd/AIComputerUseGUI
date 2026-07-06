@@ -61,6 +61,7 @@ const DEFAULT_SETTINGS: Settings = {
   zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
   boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default
+  saveScreenshotsInSessions: true, // Sessions now live in IndexedDB (large quota), so images fit; turn off for text-only sessions
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';

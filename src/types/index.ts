@@ -14,6 +14,7 @@ export interface Settings {
   zoomCropFraction: number; // Crop window size as a fraction of the screen (e.g. 0.3)
   boxRefine: boolean; // Model returns a bounding box of the target; we click its center. Applies to the final grounding pass (pass 2 when zoomRefine is on, pass 1 otherwise)
   debugMode: boolean; // Show developer instruments (the calibration probe in the expanded screenshot view)
+  saveScreenshotsInSessions: boolean; // Include screenshots/zoom crops when saving sessions; off = text-only sessions (tiny storage)
 }
 
 export interface Coordinate {
