@@ -1,12 +1,22 @@
 mod actions;
 mod api;
+mod protocol;
+mod run_control;
 mod screenshot;
 mod types;
+mod validation;
+mod window_guard;
 
-use crate::types::{ActionResult, AgentResponse};
+use crate::{
+    run_control::{Proposal, RunControl},
+    types::{ActionResult, AgentResponse},
+};
 use serde::Serialize;
+use std::sync::Arc;
+use tauri::{Emitter, Manager, State};
 
-/// Screenshot result with metadata for the frontend
+type Control<'a> = State<'a, Arc<RunControl>>;
+
 #[derive(Serialize)]
 pub struct ScreenshotWithMetadata {
     pub base64_image: String,
@@ -14,30 +24,51 @@ pub struct ScreenshotWithMetadata {
     pub image_height: u32,
     pub actual_screen_width: u32,
     pub actual_screen_height: u32,
+    pub observation_id: String,
 }
 
-/// Capture a screenshot and return it as base64
 #[tauri::command]
-async fn capture_screenshot(max_dimension: Option<u32>) -> Result<String, String> {
-    screenshot::capture_screen(max_dimension).map_err(|e| e.to_string())
+fn start_run(supervised: bool, state: Control<'_>) -> Result<String, String> {
+    state.begin(supervised)
+}
+#[tauri::command]
+fn stop_run(run_id: String, state: Control<'_>) {
+    state.stop(Some(&run_id));
 }
 
-/// Capture a screenshot with metadata (dimensions)
 #[tauri::command]
-async fn capture_screenshot_with_metadata(max_dimension: Option<u32>) -> Result<ScreenshotWithMetadata, String> {
-    let result = screenshot::capture_screen_with_metadata(max_dimension).map_err(|e| e.to_string())?;
+async fn capture_screenshot_with_metadata(
+    run_id: String,
+    max_dimension: Option<u32>,
+    state: Control<'_>,
+) -> Result<ScreenshotWithMetadata, String> {
+    let token = state.token(&run_id)?;
+    let foreground = window_guard::foreground();
+    let windows = window_guard::snapshot();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        screenshot::capture_screen_with_metadata(max_dimension)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if token.is_cancelled() {
+        return Err("Run stopped".into());
+    }
+    let observation_id = state.observe(&run_id, result.geometry, foreground, windows)?;
     Ok(ScreenshotWithMetadata {
         base64_image: result.base64_image,
         image_width: result.image_width,
         image_height: result.image_height,
         actual_screen_width: result.actual_screen_width,
         actual_screen_height: result.actual_screen_height,
+        observation_id,
     })
 }
 
-/// Process a computer use query
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn process_computer_use(
+    run_id: String,
     screenshot_base64: String,
     query: String,
     api_endpoint: String,
@@ -45,11 +76,11 @@ async fn process_computer_use(
     display_width: u32,
     display_height: u32,
     system_prompt: String,
-    screenshot_history: Option<Vec<String>>,
     enable_thinking: Option<bool>,
     prior_turns: Option<Vec<types::PriorTurn>>,
-    coordinate_base: Option<f64>,
+    state: Control<'_>,
 ) -> Result<AgentResponse, String> {
+    let token = state.token(&run_id)?;
     api::call_computer_use_api(
         &api_endpoint,
         &model_id,
@@ -58,18 +89,19 @@ async fn process_computer_use(
         display_width,
         display_height,
         &system_prompt,
-        screenshot_history,
         enable_thinking.unwrap_or(false),
         prior_turns,
-        coordinate_base.unwrap_or(1000.0),
+        1000.0,
+        &token,
     )
     .await
     .map_err(|e| e.to_string())
 }
 
-/// Refine a coarse click coordinate with a zoomed-in second pass.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn refine_coordinate(
+    run_id: String,
     api_endpoint: String,
     model_id: String,
     coarse_x: f64,
@@ -78,10 +110,11 @@ async fn refine_coordinate(
     query: String,
     crop_fraction: Option<f64>,
     max_dimension: Option<u32>,
-    coordinate_base: Option<f64>,
     enable_thinking: Option<bool>,
     box_mode: Option<bool>,
+    state: Control<'_>,
 ) -> Result<api::RefineResult, String> {
+    let token = state.token(&run_id)?;
     api::refine_coordinate(
         &api_endpoint,
         &model_id,
@@ -91,74 +124,154 @@ async fn refine_coordinate(
         &query,
         crop_fraction.unwrap_or(0.3),
         max_dimension.unwrap_or(1280),
-        coordinate_base.unwrap_or(1000.0),
+        1000.0,
         enable_thinking.unwrap_or(false),
         box_mode.unwrap_or(false),
+        &token,
     )
     .await
     .map_err(|e| e.to_string())
 }
 
-/// Abort any in-flight inference request (user pressed Stop mid-generation)
 #[tauri::command]
-fn cancel_inference() {
-    api::cancel_inference();
+fn prepare_action(
+    run_id: String,
+    observation_id: String,
+    action: String,
+    state: Control<'_>,
+) -> Result<Proposal, String> {
+    if action.len() > 32768 {
+        return Err("Action payload is too large".into());
+    }
+    let action: ActionResult =
+        serde_json::from_str(&action).map_err(|_| "Invalid action payload")?;
+    validation::validate(&action, 1000.0, false)?;
+    actions::validate_keys(&action).map_err(|e| e.to_string())?;
+    let observation = state.observation(&run_id, &observation_id)?;
+    if screenshot::get_screen_geometry().map_err(|e| e.to_string())? != observation.geometry {
+        return Err("Display changed; capture again".into());
+    }
+    let target = if let Some(p) = action
+        .arguments
+        .coordinate
+        .as_ref()
+        .or(action.arguments.start_coordinate.as_ref())
+    {
+        Some(window_guard::at_point(
+            validation::pixel(
+                p[0],
+                1000.0,
+                observation.geometry.width,
+                observation.geometry.x,
+            ),
+            validation::pixel(
+                p[1],
+                1000.0,
+                observation.geometry.height,
+                observation.geometry.y,
+            ),
+        )?)
+    } else if validation::is_mutating(&action) {
+        Some(
+            observation
+                .foreground
+                .clone()
+                .ok_or("Click the target application before typing or pressing keys")?,
+        )
+    } else {
+        None
+    };
+    if let Some(target) = &target {
+        window_guard::require_captured(&observation.windows, target)?;
+    }
+    state.prepare(&run_id, action, observation, target)
 }
 
-/// Execute an action on the computer
 #[tauri::command]
-async fn execute_action(action: String, coordinate_base: Option<f64>) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    println!("execute_action called ({} bytes)", action.len());
-
-    let action_result: ActionResult =
-        serde_json::from_str(&action).map_err(|e| format!("Failed to parse action: {}", e))?;
-
-    #[cfg(debug_assertions)]
-    println!("Parsed action: {}", action_result.action);
-
-    let (width, height) = screenshot::get_screen_dimensions().map_err(|e| e.to_string())?;
-    #[cfg(debug_assertions)]
-    println!("Screen dimensions: {}x{}", width, height);
-
-    actions::execute_action(&action_result, width, height, coordinate_base.unwrap_or(1000.0)).map_err(|e| e.to_string())
+fn approve_action(run_id: String, proposal_id: String, state: Control<'_>) -> Result<(), String> {
+    state.approve(&run_id, &proposal_id)
 }
 
-/// Test API connection
+#[tauri::command]
+async fn execute_action(
+    run_id: String,
+    proposal_id: String,
+    state: Control<'_>,
+) -> Result<(), String> {
+    let control = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _serial = control
+            .execution
+            .lock()
+            .map_err(|_| "Input executor unavailable")?;
+        let (proposal, token) = control.take(&run_id, &proposal_id)?;
+        if screenshot::get_screen_geometry().map_err(|e| e.to_string())?
+            != proposal.observation.geometry
+        {
+            return Err("Display changed; capture again".into());
+        }
+        actions::execute_action(
+            &proposal.action,
+            proposal.observation.geometry,
+            proposal.target.as_ref(),
+            &token,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn test_api_connection(api_endpoint: String) -> Result<bool, String> {
     api::test_connection(&api_endpoint)
         .await
         .map_err(|e| e.to_string())
 }
-
-/// Fetch available models from the API endpoint
 #[tauri::command]
 async fn fetch_available_models(api_endpoint: String) -> Result<Vec<String>, String> {
     api::fetch_models(&api_endpoint)
         .await
         .map_err(|e| e.to_string())
 }
-
-/// Get screen dimensions
 #[tauri::command]
-async fn get_screen_size() -> Result<(u32, u32), String> {
+fn get_screen_size() -> Result<(u32, u32), String> {
     screenshot::get_screen_dimensions().map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(Arc::new(RunControl::default()))
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let control = app.state::<Arc<RunControl>>().inner().clone();
+            std::thread::spawn(move || {
+                let mut pressed = false;
+                loop {
+                    let now = window_guard::emergency_pressed();
+                    if now && !pressed {
+                        control.stop(None);
+                        let _ = handle.emit("agent-stopped", ());
+                    }
+                    pressed = now;
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            capture_screenshot,
+            start_run,
+            stop_run,
             capture_screenshot_with_metadata,
             process_computer_use,
             refine_coordinate,
-            cancel_inference,
+            prepare_action,
+            approve_action,
             execute_action,
             test_api_connection,
             fetch_available_models,
-            get_screen_size,
+            get_screen_size
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

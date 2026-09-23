@@ -1,8 +1,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::codecs::png::PngEncoder;
-use image::{ImageEncoder, RgbaImage, imageops::FilterType};
-use screenshots::Screen;
+use image::{imageops::FilterType, ImageEncoder, RgbaImage};
 use thiserror::Error;
+use xcap::Monitor;
 
 /// Default maximum dimension (width or height) for screenshots sent to the model
 /// This helps reduce token usage while maintaining enough detail for the model
@@ -23,7 +23,7 @@ fn calculate_resized_dimensions(width: u32, height: u32, max_dimension: u32) -> 
     if width <= max_dimension && height <= max_dimension {
         return (width, height);
     }
-    
+
     if width > height {
         let ratio = max_dimension as f64 / width as f64;
         (max_dimension, (height as f64 * ratio) as u32)
@@ -37,14 +37,17 @@ fn calculate_resized_dimensions(width: u32, height: u32, max_dimension: u32) -> 
 fn resize_image(img: RgbaImage, max_dimension: u32) -> RgbaImage {
     let (width, height) = (img.width(), img.height());
     let (new_width, new_height) = calculate_resized_dimensions(width, height, max_dimension);
-    
+
     // Check if resizing is needed
     if new_width == width && new_height == height {
         return img;
     }
-    
-    println!("Resizing screenshot from {}x{} to {}x{}", width, height, new_width, new_height);
-    
+
+    println!(
+        "Resizing screenshot from {}x{} to {}x{}",
+        width, height, new_width, new_height
+    );
+
     // Resize using Lanczos3 filter for good quality
     image::imageops::resize(&img, new_width, new_height, FilterType::Lanczos3)
 }
@@ -57,29 +60,26 @@ pub struct ScreenshotResult {
     pub image_height: u32,
     pub actual_screen_width: u32,
     pub actual_screen_height: u32,
+    pub geometry: ScreenGeometry,
 }
 
 /// Capture a screenshot of the primary screen and return it with metadata
 /// max_dimension: Optional maximum dimension for resizing. If None, uses DEFAULT_MAX_SCREENSHOT_DIMENSION.
-pub fn capture_screen_with_metadata(max_dimension: Option<u32>) -> Result<ScreenshotResult, ScreenshotError> {
-    let max_dim = max_dimension.unwrap_or(DEFAULT_MAX_SCREENSHOT_DIMENSION);
-    
-    // Get all screens
-    let screens = Screen::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
-    
-    // Get the primary screen (first one)
-    let screen = screens.first().ok_or(ScreenshotError::NoScreens)?;
-    
-    let actual_width = screen.display_info.width;
-    let actual_height = screen.display_info.height;
-    let _screen_x = screen.display_info.x;
-    let _screen_y = screen.display_info.y;
-    
+pub fn capture_screen_with_metadata(
+    max_dimension: Option<u32>,
+) -> Result<ScreenshotResult, ScreenshotError> {
+    let max_dim = checked_dimension(max_dimension.unwrap_or(DEFAULT_MAX_SCREENSHOT_DIMENSION))?;
+
+    let screen = primary_monitor()?;
+    let geometry = geometry(&screen)?;
+    let actual_width = geometry.width;
+    let actual_height = geometry.height;
+
     // Capture the screenshot
     let image = screen
-        .capture()
+        .capture_image()
         .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
-    
+
     // Convert to RgbaImage for resizing
     let rgba_image = RgbaImage::from_raw(image.width(), image.height(), image.into_raw())
         .ok_or_else(|| ScreenshotError::EncodeError("Failed to create RGBA image".to_string()))?;
@@ -88,7 +88,7 @@ pub fn capture_screen_with_metadata(max_dimension: Option<u32>) -> Result<Screen
     let resized = resize_image(rgba_image, max_dim);
     let image_width = resized.width();
     let image_height = resized.height();
-    
+
     // Convert to PNG bytes
     let mut buffer = Vec::new();
     let encoder = PngEncoder::new(&mut buffer);
@@ -100,26 +100,27 @@ pub fn capture_screen_with_metadata(max_dimension: Option<u32>) -> Result<Screen
             image::ExtendedColorType::Rgba8,
         )
         .map_err(|e| ScreenshotError::EncodeError(e.to_string()))?;
-    
+
     // Encode as base64
     let base64_image = STANDARD.encode(&buffer);
-    
-    println!("Screenshot captured: {}x{} (actual: {}x{}), {} bytes base64", 
-        image_width, image_height, actual_width, actual_height, base64_image.len());
-    
+
+    println!(
+        "Screenshot captured: {}x{} (actual: {}x{}), {} bytes base64",
+        image_width,
+        image_height,
+        actual_width,
+        actual_height,
+        base64_image.len()
+    );
+
     Ok(ScreenshotResult {
         base64_image,
         image_width,
         image_height,
         actual_screen_width: actual_width,
         actual_screen_height: actual_height,
+        geometry,
     })
-}
-
-/// Capture a screenshot of the primary screen and return it as a base64-encoded PNG
-/// (Legacy function for compatibility)
-pub fn capture_screen(max_dimension: Option<u32>) -> Result<String, ScreenshotError> {
-    capture_screen_with_metadata(max_dimension).map(|r| r.base64_image)
 }
 
 /// A zoomed-in crop of the screen, plus the crop's geometry expressed as
@@ -168,7 +169,15 @@ fn put_px(img: &mut RgbaImage, x: i64, y: i64, color: [u8; 4]) {
 /// Draw a center-gap crosshair centered at (cx, cy). `gap` leaves the exact
 /// target pixel uncovered; `len` is the arm length; `thick` adds pixels on each
 /// side of the 1px line (thick=1 -> 3px wide).
-fn draw_cross(img: &mut RgbaImage, cx: i64, cy: i64, gap: i64, len: i64, thick: i64, color: [u8; 4]) {
+fn draw_cross(
+    img: &mut RgbaImage,
+    cx: i64,
+    cy: i64,
+    gap: i64,
+    len: i64,
+    thick: i64,
+    color: [u8; 4],
+) {
     for d in gap..=len {
         for t in -thick..=thick {
             put_px(img, cx + d, cy + t, color); // right arm
@@ -201,10 +210,15 @@ pub fn capture_zoom_crop(
     crop_frac: f64,
     max_dimension: u32,
 ) -> Result<ZoomCrop, ScreenshotError> {
-    let screens = Screen::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
-    let screen = screens.first().ok_or(ScreenshotError::NoScreens)?;
+    if !center_fx.is_finite() || !center_fy.is_finite() || !crop_frac.is_finite() {
+        return Err(ScreenshotError::CaptureError(
+            "Invalid crop geometry".into(),
+        ));
+    }
+    let max_dimension = checked_dimension(max_dimension)?;
+    let screen = primary_monitor()?;
     let image = screen
-        .capture()
+        .capture_image()
         .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
 
     let full_w = image.width();
@@ -259,8 +273,66 @@ pub fn capture_zoom_crop(
 
 /// Get screen dimensions (returns actual screen dimensions, not resized)
 pub fn get_screen_dimensions() -> Result<(u32, u32), ScreenshotError> {
-    let screens = Screen::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
-    let screen = screens.first().ok_or(ScreenshotError::NoScreens)?;
-    
-    Ok((screen.display_info.width, screen.display_info.height))
+    let g = get_screen_geometry()?;
+    Ok((g.width, g.height))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenGeometry {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+}
+
+fn primary_monitor() -> Result<Monitor, ScreenshotError> {
+    Monitor::all()
+        .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?
+        .into_iter()
+        .find(|m| m.is_primary().unwrap_or(false))
+        .ok_or(ScreenshotError::NoScreens)
+}
+
+fn geometry(m: &Monitor) -> Result<ScreenGeometry, ScreenshotError> {
+    let err = |e: xcap::XCapError| ScreenshotError::CaptureError(e.to_string());
+    Ok(ScreenGeometry {
+        id: m.id().map_err(err)?,
+        width: m.width().map_err(err)?,
+        height: m.height().map_err(err)?,
+        x: m.x().map_err(err)?,
+        y: m.y().map_err(err)?,
+    })
+}
+
+pub fn get_screen_geometry() -> Result<ScreenGeometry, ScreenshotError> {
+    geometry(&primary_monitor()?)
+}
+
+fn checked_dimension(value: u32) -> Result<u32, ScreenshotError> {
+    if !(256..=3840).contains(&value) {
+        return Err(ScreenshotError::CaptureError(
+            "Screenshot size must be between 256 and 3840".into(),
+        ));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "Requires an interactive Windows desktop; captures only, never sends input"]
+    fn capture_primary_monitor_smoke() {
+        let shot = capture_screen_with_metadata(Some(1280)).unwrap();
+        let decoded =
+            image::load_from_memory(&STANDARD.decode(shot.base64_image).unwrap()).unwrap();
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (shot.image_width, shot.image_height)
+        );
+        assert!(shot.image_width <= 1280 && shot.image_height <= 1280);
+        assert!(shot.geometry.width > 0 && shot.geometry.height > 0);
+        assert_eq!(shot.geometry, get_screen_geometry().unwrap());
+    }
 }
