@@ -1,10 +1,13 @@
-use crate::types::ActionResult;
-use enigo::{
-    Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings,
+use crate::{
+    screenshot::ScreenGeometry,
+    types::ActionResult,
+    validation,
+    window_guard::{self, WindowTarget},
 };
-use std::thread;
-use std::time::Duration;
+use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use std::{thread, time::Duration};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Error, Debug)]
 pub enum ActionError {
@@ -12,289 +15,221 @@ pub enum ActionError {
     ExecutionError(String),
     #[error("Invalid action: {0}")]
     InvalidAction(String),
-    #[error("Missing required argument: {0}")]
-    MissingArgument(String),
+    #[error("Run stopped")]
+    Cancelled,
 }
 
-/// Execute an action on the computer.
-/// `coordinate_base` is the normalized space the model emits coordinates in.
-/// The grounding models this app targets (Qwen3-VL, Gemma) all use 0-1000, so
-/// callers pass 1000.0; the parameter is kept to localize the scaling math.
-pub fn execute_action(action: &ActionResult, screen_width: u32, screen_height: u32, coordinate_base: f64) -> Result<(), ActionError> {
-    println!("Executing action: {} with screen size {}x{} (coordinate base {})", action.action, screen_width, screen_height, coordinate_base);
-    
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-    
-    match action.action.as_str() {
-        "click" | "left_click" => {
-            let coord = action.arguments.coordinate.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("coordinate".to_string()))?;
-            
-            if coord.len() < 2 {
-                return Err(ActionError::InvalidAction("coordinate must have x and y values".to_string()));
-            }
-            
-            // Model outputs in 0-1000 range, scale to actual screen size
-            let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
-            let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
-            
-            println!("Click: model coords ({}, {}) -> screen coords ({}, {})", coord[0], coord[1], x, y);
-            
-            enigo.move_mouse(x, y, Coordinate::Abs)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(100));
-            enigo.button(Button::Left, Direction::Click)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            
-            println!("Click executed successfully");
-        }
-        
-        "right_click" => {
-            let coord = action.arguments.coordinate.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("coordinate".to_string()))?;
-            
-            if coord.len() < 2 {
-                return Err(ActionError::InvalidAction("coordinate must have x and y values".to_string()));
-            }
-            
-            let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
-            let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
-            
-            enigo.move_mouse(x, y, Coordinate::Abs)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
-            enigo.button(Button::Right, Direction::Click)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-        }
-        
-        "double_click" => {
-            let coord = action.arguments.coordinate.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("coordinate".to_string()))?;
-            
-            if coord.len() < 2 {
-                return Err(ActionError::InvalidAction("coordinate must have x and y values".to_string()));
-            }
-            
-            let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
-            let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
-            
-            enigo.move_mouse(x, y, Coordinate::Abs)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
-            enigo.button(Button::Left, Direction::Click)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
-            enigo.button(Button::Left, Direction::Click)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-        }
-        
-        "left_click_drag" => {
-            let start = action.arguments.start_coordinate.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("start_coordinate".to_string()))?;
-            let end = action.arguments.end_coordinate.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("end_coordinate".to_string()))?;
-            
-            if start.len() < 2 || end.len() < 2 {
-                return Err(ActionError::InvalidAction("coordinates must have x and y values".to_string()));
-            }
-            
-            let start_x = (start[0] / coordinate_base * screen_width as f64) as i32;
-            let start_y = (start[1] / coordinate_base * screen_height as f64) as i32;
-            let end_x = (end[0] / coordinate_base * screen_width as f64) as i32;
-            let end_y = (end[1] / coordinate_base * screen_height as f64) as i32;
-            
-            // Move to start position
-            enigo.move_mouse(start_x, start_y, Coordinate::Abs)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
-            
-            // Press button
-            enigo.button(Button::Left, Direction::Press)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
-            
-            // Move to end position
-            enigo.move_mouse(end_x, end_y, Coordinate::Abs)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-            thread::sleep(Duration::from_millis(50));
-            
-            // Release button
-            enigo.button(Button::Left, Direction::Release)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-        }
-        
-        "scroll" => {
-            let coord = action.arguments.coordinate.as_ref();
-            let direction = action.arguments.direction.as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("down"); // Default to down if not specified
-            
-            // If we have coordinates, move there first
-            if let Some(coord) = coord {
-                if coord.len() >= 2 {
-                    let x = (coord[0] / coordinate_base * screen_width as f64) as i32;
-                    let y = (coord[1] / coordinate_base * screen_height as f64) as i32;
-                    
-                    enigo.move_mouse(x, y, Coordinate::Abs)
-                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-            
-            let amount = action.arguments.amount.unwrap_or(5);
-            
-            println!("Scroll: direction={}, amount={}", direction, amount);
-            
-            // enigo 0.4 negates `length` internally before applying WHEEL_DELTA on
-            // the Vertical axis, so positive length scrolls down and negative
-            // scrolls up. Horizontal follows the natural sign (positive = right).
-            match direction {
-                "up" => {
-                    enigo.scroll(-amount, enigo::Axis::Vertical)
-                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                }
-                "down" => {
-                    enigo.scroll(amount, enigo::Axis::Vertical)
-                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                }
-                "left" => {
-                    enigo.scroll(-amount, enigo::Axis::Horizontal)
-                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                }
-                "right" => {
-                    enigo.scroll(amount, enigo::Axis::Horizontal)
-                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                }
-                _ => {
-                    println!("Unknown scroll direction '{}', defaulting to down", direction);
-                    enigo.scroll(amount, enigo::Axis::Vertical)
-                        .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                }
-            }
-            
-            println!("Scroll executed successfully");
-        }
-        
-        "type" => {
-            let text = action.arguments.text.as_ref()
-                .ok_or_else(|| ActionError::MissingArgument("text".to_string()))?;
-            
-            #[cfg(debug_assertions)]
-            println!("Typing text ({} chars)", text.len());
-            enigo.text(text)
-                .map_err(|e| ActionError::ExecutionError(format!("Failed to type text: {}", e)))?;
-            #[cfg(debug_assertions)]
-            println!("Type executed successfully");
-        }
-        
-        "key" => {
-            let key_str = action.arguments.key.as_ref()
-                .ok_or_else(|| {
-                    #[cfg(debug_assertions)]
-                    println!("Key action missing 'key' argument");
-                    ActionError::MissingArgument("key".to_string())
-                })?;
-            
-            #[cfg(debug_assertions)]
-            println!("Pressing key: {}", key_str);
-
-            // Add a small delay to ensure the target window has focus
-            thread::sleep(Duration::from_millis(100));
-
-            // Parse the key string (e.g., "ctrl+c", "enter", "backspace")
-            execute_key_sequence(&mut enigo, key_str)?;
-            #[cfg(debug_assertions)]
-            println!("Key press executed successfully");
-        }
-        
-        "wait" => {
-            // Wait action - just pause execution
-            thread::sleep(Duration::from_secs(1));
-        }
-        
-        "screenshot" => {
-            // Screenshot action - no-op here, handled separately
-        }
-        
-        "done" => {
-            // Done action - signals task completion, no-op here
-            println!("Task marked as done by the model");
-        }
-
-        "none" => {
-            // Conversational response with no computer action — the frontend
-            // ends the run on "none", but keep a no-op arm so a stray dispatch
-            // can't fail the whole task.
-            println!("No-op action 'none' (conversational response)");
-        }
-        
-        "confirm" => {
-            // Confirm action - signals need for user confirmation before proceeding
-            // The actual confirmation is handled in the frontend
-            let _message = action.arguments.text.as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("Proceed with this action?");
-            #[cfg(debug_assertions)]
-            println!("Confirmation requested: {}", _message);
-        }
-        
-        _ => {
-            return Err(ActionError::InvalidAction(format!("Unknown action: {}", action.action)));
-        }
+fn check(cancel: &CancellationToken) -> Result<(), ActionError> {
+    if cancel.is_cancelled() || window_guard::emergency_pressed() {
+        cancel.cancel();
+        return Err(ActionError::Cancelled);
     }
-    
     Ok(())
 }
 
-/// Execute a key sequence (e.g., "ctrl+c", "enter")
-fn execute_key_sequence(enigo: &mut Enigo, key_str: &str) -> Result<(), ActionError> {
-    #[cfg(debug_assertions)]
-    println!("execute_key_sequence called with: '{}'", key_str);
-    let parts: Vec<&str> = key_str.split('+').collect();
-    #[cfg(debug_assertions)]
-    println!("Key parts: {:?}", parts);
-    
-    if parts.len() == 1 {
-        // Single key
-        let key = parse_key(parts[0])?;
-        println!("Parsed key: {:?}", key);
-        enigo.key(key, Direction::Click)
-            .map_err(|e| {
-                println!("Enigo key error: {}", e);
-                ActionError::ExecutionError(format!("Key press failed: {}", e))
-            })?;
-    } else {
-        // Key combination (e.g., ctrl+c). Parse every part BEFORE pressing
-        // anything so an unknown key name can't leave modifiers held down.
-        let mut keys: Vec<Key> = parts
-            .iter()
-            .map(|part| parse_key(part))
-            .collect::<Result<_, _>>()?;
-        let main_key = keys.pop().ok_or_else(|| ActionError::InvalidAction("Empty key sequence".to_string()))?;
-
-        // Press modifiers, then the main key. If anything fails mid-sequence,
-        // release whatever was already pressed — a stuck Ctrl/Alt/Shift/Win
-        // would otherwise corrupt the user's real keyboard state.
-        let mut pressed: Vec<Key> = Vec::new();
-        let result = (|| {
-            for modifier in &keys {
-                enigo.key(*modifier, Direction::Press)
-                    .map_err(|e| ActionError::ExecutionError(e.to_string()))?;
-                pressed.push(*modifier);
-            }
-            enigo.key(main_key, Direction::Click)
-                .map_err(|e| ActionError::ExecutionError(e.to_string()))
-        })();
-
-        // Release modifiers in reverse order on both success and failure,
-        // ignoring release errors so the first failure is what gets reported.
-        for modifier in pressed.into_iter().rev() {
-            let _ = enigo.key(modifier, Direction::Release);
-        }
-        result?;
+fn wait(ms: u64, cancel: &CancellationToken) -> Result<(), ActionError> {
+    for _ in 0..ms.div_ceil(20) {
+        check(cancel)?;
+        thread::sleep(Duration::from_millis(20));
     }
+    check(cancel)
+}
 
+pub fn validate_keys(action: &ActionResult) -> Result<(), ActionError> {
+    if let Some(keys) = &action.arguments.key {
+        let parts: Vec<_> = keys.split('+').collect();
+        for (i, part) in parts.iter().enumerate() {
+            parse_key(part)?;
+            if i + 1 < parts.len()
+                && !matches!(
+                    part.trim().to_lowercase().as_str(),
+                    "ctrl" | "control" | "alt" | "shift" | "meta" | "win" | "cmd" | "command"
+                )
+            {
+                return Err(ActionError::InvalidAction(
+                    "Only modifiers may precede the final key".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn execute_action(
+    action: &ActionResult,
+    screen: ScreenGeometry,
+    target: Option<&WindowTarget>,
+    cancel: &CancellationToken,
+) -> Result<(), ActionError> {
+    validation::validate(action, 1000.0, false).map_err(ActionError::InvalidAction)?;
+    validate_keys(action)?;
+    check(cancel)?;
+    if action.action == "wait" {
+        return wait(1000, cancel);
+    }
+    if !validation::is_mutating(action) {
+        return Ok(());
+    }
+    let target = target.ok_or_else(|| {
+        ActionError::InvalidAction(
+            "No external target window; click the target application first".into(),
+        )
+    })?;
+    let guard = |focus| window_guard::verify(target, focus).map_err(ActionError::InvalidAction);
+    guard(matches!(action.action.as_str(), "type" | "key"))?;
+    let point = |p: &[f64]| {
+        (
+            validation::pixel(p[0], 1000.0, screen.width, screen.x),
+            validation::pixel(p[1], 1000.0, screen.height, screen.y),
+        )
+    };
+    let at_point = |x, y| -> Result<(), ActionError> {
+        let current = window_guard::at_point(x, y).map_err(ActionError::InvalidAction)?;
+        if &current != target {
+            return Err(ActionError::InvalidAction(
+                "Click target changed; capture again".into(),
+            ));
+        }
+        Ok(())
+    };
+    let mut enigo =
+        Enigo::new(&Settings::default()).map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+    let input_err = |e: enigo::InputError| ActionError::ExecutionError(e.to_string());
+    match action.action.as_str() {
+        "click" | "left_click" | "right_click" | "double_click" => {
+            let (x, y) = point(
+                action
+                    .arguments
+                    .coordinate
+                    .as_deref()
+                    .ok_or_else(|| ActionError::InvalidAction("Missing coordinate".into()))?,
+            );
+            at_point(x, y)?;
+            enigo.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+            wait(80, cancel)?;
+            at_point(x, y)?;
+            let button = if action.action == "right_click" {
+                Button::Right
+            } else {
+                Button::Left
+            };
+            enigo.button(button, Direction::Click).map_err(input_err)?;
+            if action.action == "double_click" {
+                wait(60, cancel)?;
+                at_point(x, y)?;
+                enigo.button(button, Direction::Click).map_err(input_err)?;
+            }
+        }
+        "left_click_drag" => {
+            let (sx, sy) = point(
+                action
+                    .arguments
+                    .start_coordinate
+                    .as_deref()
+                    .ok_or_else(|| ActionError::InvalidAction("Missing drag start".into()))?,
+            );
+            let (ex, ey) = point(
+                action
+                    .arguments
+                    .end_coordinate
+                    .as_deref()
+                    .ok_or_else(|| ActionError::InvalidAction("Missing drag end".into()))?,
+            );
+            at_point(sx, sy)?;
+            window_guard::at_point(ex, ey).map_err(ActionError::InvalidAction)?;
+            enigo
+                .move_mouse(sx, sy, Coordinate::Abs)
+                .map_err(input_err)?;
+            wait(50, cancel)?;
+            at_point(sx, sy)?;
+            enigo
+                .button(Button::Left, Direction::Press)
+                .map_err(input_err)?;
+            let result = (|| {
+                wait(50, cancel)?;
+                window_guard::at_point(ex, ey).map_err(ActionError::InvalidAction)?;
+                enigo
+                    .move_mouse(ex, ey, Coordinate::Abs)
+                    .map_err(input_err)?;
+                wait(50, cancel)
+            })();
+            let release = enigo
+                .button(Button::Left, Direction::Release)
+                .map_err(input_err);
+            result?;
+            release?;
+        }
+        "scroll" => {
+            let p = action.arguments.coordinate.as_deref().ok_or_else(|| {
+                ActionError::InvalidAction("Scroll requires a target coordinate".into())
+            })?;
+            let (x, y) = point(p);
+            at_point(x, y)?;
+            enigo.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+            wait(80, cancel)?;
+            at_point(x, y)?;
+            let amount = action.arguments.amount.unwrap_or(5);
+            let (n, axis) = match action.arguments.direction.as_deref() {
+                Some("up") => (-amount, enigo::Axis::Vertical),
+                Some("down") => (amount, enigo::Axis::Vertical),
+                Some("left") => (-amount, enigo::Axis::Horizontal),
+                _ => (amount, enigo::Axis::Horizontal),
+            };
+            enigo.scroll(n, axis).map_err(input_err)?;
+        }
+        "type" => {
+            let chars: Vec<_> = action
+                .arguments
+                .text
+                .as_deref()
+                .unwrap_or_default()
+                .chars()
+                .collect();
+            for chunk in chars.chunks(64) {
+                check(cancel)?;
+                guard(true)?;
+                enigo
+                    .text(&chunk.iter().collect::<String>())
+                    .map_err(input_err)?;
+            }
+        }
+        "key" => {
+            let mut keys = action
+                .arguments
+                .key
+                .as_deref()
+                .unwrap_or_default()
+                .split('+')
+                .map(parse_key)
+                .collect::<Result<Vec<_>, _>>()?;
+            let main = keys
+                .pop()
+                .ok_or_else(|| ActionError::InvalidAction("Missing key".into()))?;
+            let mut held = Vec::new();
+            let result = (|| {
+                for key in keys {
+                    check(cancel)?;
+                    guard(true)?;
+                    enigo.key(key, Direction::Press).map_err(input_err)?;
+                    held.push(key);
+                }
+                check(cancel)?;
+                guard(true)?;
+                enigo.key(main, Direction::Click).map_err(input_err)
+            })();
+            let mut release_error = None;
+            for key in held.into_iter().rev() {
+                if let Err(e) = enigo.key(key, Direction::Release) {
+                    release_error = Some(input_err(e));
+                }
+            }
+            result?;
+            if let Some(err) = release_error {
+                return Err(err);
+            }
+        }
+        _ => return Err(ActionError::InvalidAction("Unsupported action".into())),
+    }
     Ok(())
 }
 
@@ -344,11 +279,14 @@ fn parse_key(key_str: &str) -> Result<Key, ActionError> {
         "f10" => Key::F10,
         "f11" => Key::F11,
         "f12" => Key::F12,
-        s if s.len() == 1 => {
-            Key::Unicode(s.chars().next().unwrap())
+        s if s.chars().count() == 1 => Key::Unicode(s.chars().next().unwrap()),
+        _ => {
+            return Err(ActionError::InvalidAction(format!(
+                "Unknown key: {}",
+                key_str
+            )))
         }
-        _ => return Err(ActionError::InvalidAction(format!("Unknown key: {}", key_str))),
     };
-    
+
     Ok(key)
 }

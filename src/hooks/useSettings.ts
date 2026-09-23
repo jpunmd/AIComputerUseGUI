@@ -7,7 +7,7 @@ Your front end is a GUI application called "AI Computer Use Agent" — this is t
 
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm"], "type": "string"}, "coordinate": {"description": "The x,y coordinate in 0-1000 normalized space. (0,0) is top-left, (1000,1000) is bottom-right.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
+{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm", "plan"], "type": "string"}, "coordinate": {"description": "The x,y coordinate in 0-1000 normalized space. (0,0) is top-left, (1000,1000) is bottom-right.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
 </tools>
 
 # Coordinate System
@@ -45,7 +45,7 @@ Always return a computer action in <tool_call></tool_call> tags:
 - If the goal appears complete, use action "done"
 - For scroll: always include direction ("up", "down", "left", "right")`;
 
-const DEFAULT_SETTINGS: Settings = {
+export const DEFAULT_SETTINGS: Settings = {
   apiEndpoint: 'http://localhost:8889/v1',
   modelId: 'Qwen/Qwen3-VL-30B-A3B-Instruct',
   displayWidth: 1000,
@@ -56,12 +56,12 @@ const DEFAULT_SETTINGS: Settings = {
   screenshotMaxDimension: 1280, // Max screenshot dimension (lower = fewer tokens, less detail)
   enableThinking: true, // Thinking mode on by default (Qwen3-VL thinking models)
   expandThinkingByDefault: false, // Thinking blocks collapsed by default; user clicks to expand
-  autoApproveConfirmations: false, // When true, skip the confirmation dialog for sensitive actions
+  enablePlanning: true,
   zoomRefine: false, // Off by default; two-pass adds a second API call per click
   zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
   boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default
-  saveScreenshotsInSessions: true, // Sessions now live in IndexedDB (large quota), so images fit; turn off for text-only sessions
+  saveScreenshotsInSessions: false, // Opt in to persisting desktop images.
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';
@@ -71,7 +71,7 @@ export function useSettings() {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+        return sanitizeSettings(JSON.parse(stored));
       }
     } catch {
       console.error('Failed to load settings from storage');
@@ -88,7 +88,7 @@ export function useSettings() {
   }, [settings]);
 
   const updateSettings = (updates: Partial<Settings>) => {
-    setSettings(prev => ({ ...prev, ...updates }));
+    setSettings(prev => sanitizeSettings({ ...prev, ...updates }));
   };
 
   const resetSettings = () => {
@@ -101,4 +101,20 @@ export function useSettings() {
     resetSettings,
     DEFAULT_SETTINGS,
   };
+}
+
+// Explicit allowlist also drops legacy persistent auto-approval and unknown fields.
+export function sanitizeSettings(value: unknown): Settings {
+  const result = {...DEFAULT_SETTINGS};
+  if (!value || typeof value !== 'object') return result;
+  const stored=value as Record<string, unknown>;
+  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+    if (typeof stored[key] === typeof DEFAULT_SETTINGS[key]) Object.assign(result,{[key]:stored[key]});
+  }
+  const bounded=(n:number,min:number,max:number,fallback:number)=>Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback;
+  result.maxTurns=Math.round(bounded(result.maxTurns,1,100,20));
+  result.actionDelayMs=bounded(result.actionDelayMs,0,10000,1000);
+  result.screenshotMaxDimension=Math.round(bounded(result.screenshotMaxDimension,256,3840,1280));
+  result.zoomCropFraction=bounded(result.zoomCropFraction,0.05,1,0.3);
+  return result;
 }

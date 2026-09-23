@@ -3,6 +3,17 @@
   "description": "Default capabilities for the AI Computer Use application",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:event:default",
+    "allow-start-run",
+    "allow-stop-run",
+    "allow-capture-screenshot-with-metadata",
+    "allow-process-computer-use",
+    "allow-refine-coordinate",
+    "allow-prepare-action",
+    "allow-approve-action",
+    "allow-execute-action",
+    "allow-test-api-connection",
+    "allow-fetch-available-models",
+    "allow-get-screen-size"
   ]
 }

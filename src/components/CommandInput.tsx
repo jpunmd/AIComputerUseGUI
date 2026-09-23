@@ -28,6 +28,7 @@ export function CommandInput({
         {/* Input field */}
         <div className="flex-1 relative">
           <textarea
+            maxLength={8192}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {

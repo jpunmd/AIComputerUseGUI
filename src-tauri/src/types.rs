@@ -31,6 +31,7 @@ pub struct Coordinate {
 
 /// Action arguments from the model (inside the tool_call)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionArguments {
     /// The action type: click, left_click, right_click, double_click, type, key, scroll, etc.
     pub action: String,
@@ -55,20 +56,23 @@ pub struct ActionArguments {
 /// Tool call result from the model
 /// Format: {"name": "computer", "arguments": {"action": "click", "coordinate": [x, y]}}
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCall {
     pub name: String,
     pub arguments: ActionArguments,
 }
 
 /// Action result - flattened for easier use
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ActionResult {
     pub action: String,
     pub arguments: ActionResultArguments,
 }
 
 /// Flattened action arguments for ActionResult
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ActionResultArguments {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinate: Option<Vec<f64>>,
@@ -187,13 +191,29 @@ pub struct ChatResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoice {
     pub message: ChatMessageResponse,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 /// Message in the response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageResponse {
-    pub content: String,
+    #[serde(default)]
+    pub content: Option<String>,
     /// Reasoning/thinking content from thinking models (e.g. Qwen3, DeepSeek-R1)
     #[serde(default)]
     pub reasoning_content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<NativeToolCall>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeToolCall {
+    pub function: NativeFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeFunction {
+    pub name: String,
+    pub arguments: String,
 }

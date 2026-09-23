@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { ChatSession, Message, SerializedMessage } from '../types';
+import { MAX_IMPORT_BYTES, parseSessionImport, validateSession } from '../agent/sessions';
 
 // Sessions used to live in localStorage under this key, but base64 screenshots
 // blow past its ~10MB quota after a handful of sessions. They now live in
@@ -70,7 +71,10 @@ async function idbGetAllSessions(): Promise<ChatSession[]> {
   const tx = db.transaction(SESSIONS_STORE, 'readonly');
   const request = tx.objectStore(SESSIONS_STORE).getAll();
   await txDone(tx);
-  return (request.result ?? []) as ChatSession[];
+  return (request.result ?? []).flatMap((record: unknown) => {
+    try { return [validateSession(record)]; }
+    catch { console.warn('Skipped an invalid saved session'); return []; }
+  });
 }
 
 // Convert Message to SerializedMessage (Date to ISO string)
@@ -118,7 +122,7 @@ export function useSessions() {
         const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
         if (legacy) {
           try {
-            const parsed = JSON.parse(legacy) as ChatSession[];
+            const parsed = parseSessionImport(legacy);
             if (Array.isArray(parsed) && parsed.length > 0) {
               await idbPutSessions(parsed);
             }
@@ -147,7 +151,7 @@ export function useSessions() {
     const firstUserMessage = messages.find(m => m.role === 'user');
     const initialQuery = firstUserMessage?.content || 'Untitled Session';
 
-    const includeScreenshots = options?.includeScreenshots ?? true;
+    const includeScreenshots = options?.includeScreenshots ?? false;
     const serialized = messages.map(serializeMessage);
 
     const session: ChatSession = {
@@ -236,28 +240,12 @@ export function useSessions() {
   // Import sessions from JSON file
   const importSessions = useCallback((file: File): Promise<number> => {
     return new Promise((resolve, reject) => {
+      if (file.size > MAX_IMPORT_BYTES) { reject(new Error('Session import must be 32 MB or smaller')); return; }
       const reader = new FileReader();
       reader.onload = async (e) => {
         try {
           const content = e.target?.result as string;
-          const imported = JSON.parse(content) as ChatSession[];
-
-          if (!Array.isArray(imported)) {
-            throw new Error('Invalid format: expected an array of sessions');
-          }
-
-          // Validate and regenerate IDs to avoid conflicts
-          const validSessions = imported.map(session => {
-            if (!session.messages || !Array.isArray(session.messages)) {
-              throw new Error('Invalid session: missing messages array');
-            }
-            return {
-              ...session,
-              id: crypto.randomUUID(), // New ID to avoid conflicts
-              createdAt: session.createdAt || new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-          });
+          const validSessions = parseSessionImport(content);
 
           await idbPutSessions(validSessions);
           setSessions(prev => [...validSessions, ...prev]);

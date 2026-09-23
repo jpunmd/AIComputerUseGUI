@@ -9,7 +9,7 @@ export interface Settings {
   screenshotMaxDimension: number; // Max width/height for screenshots sent to API
   enableThinking: boolean; // Enable thinking/reasoning mode for supported models
   expandThinkingByDefault: boolean; // Show thinking blocks expanded by default
-  autoApproveConfirmations: boolean; // Skip confirmation prompts for sensitive actions
+  enablePlanning: boolean;
   zoomRefine: boolean; // Two-pass coarse-to-fine: re-click on a zoomed crop for precision
   zoomCropFraction: number; // Crop window size as a fraction of the screen (e.g. 0.3)
   boxRefine: boolean; // Model returns a bounding box of the target; we click its center. Applies to the final grounding pass (pass 2 when zoomRefine is on, pass 1 otherwise)
@@ -46,6 +46,7 @@ export interface AgentResponse {
 }
 
 export interface Message {
+  task?: TaskRecord;
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -62,6 +63,7 @@ export interface Message {
 
 // Serializable version of Message for storage (Date as ISO string)
 export interface SerializedMessage {
+  task?: TaskRecord;
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -88,6 +90,7 @@ export interface ChatSession {
 
 // Screenshot with metadata from the backend
 export interface ScreenshotWithMetadata {
+  observation_id: string;
   base64_image: string;
   image_width: number;
   image_height: number;
@@ -101,4 +104,11 @@ export interface AppState {
   currentScreenshot: string | null;
   messages: Message[];
   settings: Settings;
+}
+
+export interface TaskRecord {
+  goal: string;
+  plan: string[];
+  status: 'planning' | 'running' | 'stopped' | 'completed' | 'needs_user';
+  summary: string;
 }

@@ -1,0 +1,37 @@
+name: Verify Windows application
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Frontend regression tests
+        run: npm test
+      - name: Audit JavaScript dependencies
+        run: npm audit
+      - name: Install stable Rust with format and lint tools
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check Rust formatting
+        run: cargo +stable fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: Rust regression tests
+        run: cargo +stable test --manifest-path src-tauri/Cargo.toml --lib --locked
+      - name: Rust static checks
+        run: cargo +stable clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Install Rust audit tool
+        run: cargo +stable install cargo-audit --locked
+      - name: Audit Rust dependencies
+        run: cargo +stable audit --file src-tauri/Cargo.lock
+      - name: Build Windows executable
+        run: npm run tauri build -- --no-bundle

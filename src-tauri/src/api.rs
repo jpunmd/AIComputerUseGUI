@@ -1,9 +1,59 @@
 use crate::types::*;
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::OnceLock;
 use thiserror::Error;
-use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
+
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+fn endpoint(base: &str, path: &str) -> Result<reqwest::Url, ApiError> {
+    let mut url = reqwest::Url::parse(base)
+        .map_err(|_| ApiError::ApiResponseError("Invalid API endpoint".into()))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ApiError::ApiResponseError(
+            "Use an HTTP(S) API base URL without credentials, query, or fragment".into(),
+        ));
+    }
+    url.set_path(&format!("{}/{}", url.path().trim_end_matches('/'), path));
+    Ok(url)
+}
+
+async fn decode_response<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, ApiError> {
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(ApiError::ApiResponseError(
+            "Response exceeds 2 MB limit".into(),
+        ));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(ApiError::ApiResponseError(
+                "Response exceeds 2 MB limit".into(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(ApiError::ApiResponseError(format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            String::from_utf8_lossy(&body[..body.len().min(2048)])
+        )));
+    }
+    serde_json::from_slice(&body).map_err(|e| ApiError::ParseError(e.to_string()))
+}
 
 #[derive(Error, Debug)]
 pub enum ApiError {
@@ -17,26 +67,8 @@ pub enum ApiError {
     Cancelled,
 }
 
-// Wakes any in-flight inference request when the user presses Stop, so the
-// abort takes effect immediately instead of after the model finishes
-// generating. notify_waiters() only wakes CURRENT waiters — a stop pressed
-// while nothing is in flight doesn't poison the next request.
-static CANCEL_NOTIFY: OnceLock<Notify> = OnceLock::new();
-
-fn cancel_notify() -> &'static Notify {
-    CANCEL_NOTIFY.get_or_init(Notify::new)
-}
-
-/// Abort any in-flight inference request (drops the HTTP future).
-pub fn cancel_inference() {
-    cancel_notify().notify_waiters();
-}
-
-/// Maximum number of recent screenshots to include for context
-/// Set to 0 to disable screenshot history (recommended - multiple images can confuse the model)
-const MAX_SCREENSHOT_HISTORY: usize = 0;
-
 /// Call the vision-language model API for computer use
+#[allow(clippy::too_many_arguments)]
 pub async fn call_computer_use_api(
     api_endpoint: &str,
     model_id: &str,
@@ -45,82 +77,75 @@ pub async fn call_computer_use_api(
     display_width: u32,
     display_height: u32,
     system_prompt: &str,
-    screenshot_history: Option<Vec<String>>,
     enable_thinking: bool,
     prior_turns: Option<Vec<PriorTurn>>,
     coordinate_base: f64,
+    cancel: &CancellationToken,
 ) -> Result<AgentResponse, ApiError> {
+    if cancel.is_cancelled() {
+        return Err(ApiError::Cancelled);
+    }
+    if screenshot_base64.len() > 32 * 1024 * 1024
+        || query.len() > 131072
+        || system_prompt.len() > 65536
+        || model_id.len() > 1024
+    {
+        return Err(ApiError::ApiResponseError(
+            "Request exceeds the context or image size limit".into(),
+        ));
+    }
+    if prior_turns.as_ref().is_some_and(|turns| {
+        turns.len() > 6
+            || turns
+                .iter()
+                .map(|t| t.user_query.len() + t.assistant_content.len())
+                .sum::<usize>()
+                > 96000
+    }) {
+        return Err(ApiError::ApiResponseError(
+            "Conversation context exceeds the six-turn / 24K-character budget".into(),
+        ));
+    }
     #[cfg(debug_assertions)]
     {
         println!("=== API Call Debug ===");
         println!("Query length: {} chars", query.len());
         println!("Screenshot length: {} bytes", screenshot_base64.len());
         println!("Screen size: {}x{}", display_width, display_height);
-        println!("Screenshot history count: {}", screenshot_history.as_ref().map(|h| h.len()).unwrap_or(0));
     }
-    
+
     // Connect timeout catches an unreachable server quickly; the overall
     // timeout is generous because local VLM inference on large images can
     // legitimately take minutes. Stop still cancels mid-request either way.
     let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(600))
         .build()?;
 
     #[cfg(debug_assertions)]
     println!("System prompt length: {} chars", system_prompt.len());
-    
+
     // Build user content - only the current screenshot
     // Multiple images can confuse some models about which one to act on
     let mut user_content: Vec<ContentPart> = Vec::new();
-    
-    // Only add screenshot history if explicitly enabled (MAX_SCREENSHOT_HISTORY > 0)
-    if MAX_SCREENSHOT_HISTORY > 0 {
-        if let Some(history) = &screenshot_history {
-            let start_idx = if history.len() > MAX_SCREENSHOT_HISTORY {
-                history.len() - MAX_SCREENSHOT_HISTORY
-            } else {
-                0
-            };
-            
-            for (i, old_screenshot) in history[start_idx..].iter().enumerate() {
-                user_content.push(ContentPart::Text {
-                    text: format!("[Previous state {}]", i + 1),
-                });
-                user_content.push(ContentPart::ImageUrl {
-                    image_url: ImageUrl {
-                        url: format!("data:image/png;base64,{}", old_screenshot),
-                    },
-                });
-            }
-            
-            // Add clear separator before current screenshot
-            if !history.is_empty() {
-                user_content.push(ContentPart::Text {
-                    text: "=== CURRENT STATE (perform actions on this image) ===".to_string(),
-                });
-            }
-        }
-    }
-    
-    // Add current screenshot - this is the only image if history is disabled
+
+    // Only the current screenshot is sent; old screens are not actionable evidence.
     user_content.push(ContentPart::ImageUrl {
         image_url: ImageUrl {
             url: format!("data:image/png;base64,{}", screenshot_base64),
         },
     });
-    
+
     // Add the query text
     user_content.push(ContentPart::Text {
         text: query.to_string(),
     });
-    
+
     // Build conversation: system → (prior user/assistant turns) → current user.
     // Prior turns are text-only (no screenshots) to keep token cost down — the
-    // current screenshot is the source of truth, prior thinking + actions give
-    // continuity. When preserve_thinking is enabled, prior assistant content is
-    // wrapped with <think>...</think> so the model's chat template re-includes
-    // the reasoning instead of stripping it.
+    // current screenshot is the source of truth. Reasoning is display-only;
+    // only final answers/actions are replayed into model context.
     let mut messages: Vec<ChatMessage> = Vec::new();
     messages.push(ChatMessage {
         role: "system".to_string(),
@@ -138,16 +163,10 @@ pub async fn call_computer_use_api(
                 }],
             });
 
-            let assistant_text = match (&turn.assistant_thinking, enable_thinking) {
-                (Some(thinking), true) if !thinking.trim().is_empty() => {
-                    format!("<think>\n{}\n</think>\n\n{}", thinking.trim(), turn.assistant_content)
-                }
-                _ => turn.assistant_content.clone(),
-            };
             messages.push(ChatMessage {
                 role: "assistant".to_string(),
                 content: vec![ContentPart::Text {
-                    text: assistant_text,
+                    text: turn.assistant_content.clone(),
                 }],
             });
         }
@@ -162,50 +181,38 @@ pub async fn call_computer_use_api(
     let request = ChatRequest {
         model: model_id.to_string(),
         messages,
-        max_tokens: None, // Let the server decide max tokens
-        chat_template_kwargs: if enable_thinking {
-            Some(ChatTemplateKwargs {
-                enable_thinking: Some(true),
-                // Auto-enable preserve_thinking whenever thinking is on so prior
-                // <think> blocks are kept in the rendered conversation.
-                preserve_thinking: Some(true),
-            })
-        } else {
-            None
-        },
+        max_tokens: Some(4096),
+        chat_template_kwargs: Some(ChatTemplateKwargs {
+            enable_thinking: Some(enable_thinking),
+            preserve_thinking: Some(enable_thinking),
+        }),
     };
-    
+
     // Make the API request. Racing against the cancel signal lets a Stop press
     // drop the request mid-generation instead of waiting out the inference.
-    let endpoint = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
+    let endpoint = endpoint(api_endpoint, "chat/completions")?;
     let request_future = async {
-        let response = client
-            .post(&endpoint)
-            .json(&request)
-            .send()
-            .await?;
+        let response = client.post(endpoint).json(&request).send().await?;
 
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(ApiError::ApiResponseError(error_text));
-        }
-
-        Ok(response.json::<ChatResponse>().await?)
+        decode_response::<ChatResponse>(response).await
     };
     let chat_response: ChatResponse = tokio::select! {
         result = request_future => result?,
-        _ = cancel_notify().notified() => return Err(ApiError::Cancelled),
+        _ = cancel.cancelled() => return Err(ApiError::Cancelled),
     };
 
     // Parse the response
     let raw_output_text = chat_response
         .choices
         .first()
-        .map(|c| c.message.content.clone())
+        .and_then(|c| c.message.content.clone())
         .unwrap_or_default();
 
     #[cfg(debug_assertions)]
-    println!("API Response raw output_text ({} chars)", raw_output_text.len());
+    println!(
+        "API Response raw output_text ({} chars)",
+        raw_output_text.len()
+    );
 
     // llama.cpp (and some other servers) leave <think>...</think> tags inline in
     // the content rather than splitting them into reasoning_content. Strip them
@@ -213,40 +220,24 @@ pub async fn call_computer_use_api(
     // reasoning separately.
     let (output_text, inline_thinking) = extract_think_tags(&raw_output_text);
 
-    // Extract thinking/reasoning early so the action parser can fall back to it.
+    // Extract reasoning for display only, never for action execution.
     let reasoning_content = chat_response
         .choices
         .first()
         .and_then(|c| c.message.reasoning_content.clone())
         .filter(|s| !s.trim().is_empty());
 
-    // Extract the action from the tool_call
-    let mut action = parse_tool_call(&output_text)?;
-
-    // Thinking models sometimes emit the tool_call INSIDE the <think> block or
-    // reasoning channel, leaving the visible text empty. Before treating the
-    // reply as conversational, look for a tool_call there. The contains() guard
-    // keeps the phrase-based "done" fallback from misfiring on reasoning prose.
-    if action.action == "none" {
-        for source in [reasoning_content.as_deref(), inline_thinking.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            if source.contains("<tool_call>") {
-                if let Ok(rescued) = parse_tool_call(source) {
-                    if rescued.action != "none" {
-                        println!("Rescued tool_call from thinking content: {}", rescued.action);
-                        action = rescued;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    let choice = chat_response
+        .choices
+        .first()
+        .ok_or_else(|| ApiError::ParseError("Empty model response".into()))?;
+    let action =
+        crate::protocol::parse_response(choice, &output_text).map_err(ApiError::ParseError)?;
+    crate::validation::validate(&action, coordinate_base, true).map_err(ApiError::ParseError)?;
 
     #[cfg(debug_assertions)]
     println!("Parsed action: {}", action.action);
-    
+
     // Calculate absolute coordinates if present
     // The model outputs coordinates in a normalized space (coordinate_base), we
     // scale to actual screen size. display_width/height passed from frontend are
@@ -257,21 +248,19 @@ pub async fn call_computer_use_api(
             let abs_x = coord[0] / coordinate_base * display_width as f64;
             let abs_y = coord[1] / coordinate_base * display_height as f64;
             #[cfg(debug_assertions)]
-            println!("Coordinate conversion: model ({}, {}) -> screen ({}, {}) [screen size: {}x{}]",
-                coord[0], coord[1], abs_x, abs_y, display_width, display_height);
-            Coordinate {
-                x: abs_x,
-                y: abs_y,
-            }
+            println!(
+                "Coordinate conversion: model ({}, {}) -> screen ({}, {}) [screen size: {}x{}]",
+                coord[0], coord[1], abs_x, abs_y, display_width, display_height
+            );
+            Coordinate { x: abs_x, y: abs_y }
         } else {
             Coordinate { x: 0.0, y: 0.0 }
         }
     });
-    
+
     // Thinking priority for display:
     //   1. reasoning_content field (vLLM, llama.cpp with reasoning_format=deepseek)
     //   2. inline <think>...</think> tags (llama.cpp with reasoning_format=none)
-    //   3. text before <tool_call> as a last-resort fallback
     #[cfg(debug_assertions)]
     println!(
         "Thinking sources -> reasoning_content: {}, inline <think>: {}",
@@ -299,10 +288,10 @@ pub async fn call_computer_use_api(
             None
         }
     });
-    
+
     // Check if the action is "done" to signal task completion
     let is_done = action.action == "done";
-    
+
     let response = AgentResponse {
         output_text,
         action,
@@ -312,10 +301,13 @@ pub async fn call_computer_use_api(
         is_done,
         thinking,
     };
-    
+
     #[cfg(debug_assertions)]
-    println!("AgentResponse: action={}, is_done={}", response.action.action, response.is_done);
-    
+    println!(
+        "AgentResponse: action={}, is_done={}",
+        response.action.action, response.is_done
+    );
+
     Ok(response)
 }
 
@@ -335,7 +327,7 @@ pub struct RefineResult {
     pub crop_box: Vec<f64>,
     /// The zoomed crop image (base64 PNG) the refine pass looked at.
     pub crop_image: String,
-    /// True if refinement produced a coordinate; false if it fell back to coarse.
+    /// True after successful refinement. Inconclusive targeting returns an error.
     pub refined: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
@@ -358,6 +350,7 @@ pub async fn refine_coordinate(
     coordinate_base: f64,
     enable_thinking: bool,
     box_mode: bool,
+    cancel: &CancellationToken,
 ) -> Result<RefineResult, ApiError> {
     // Coarse normalized coord -> center fraction for the crop window.
     let center_fx = coarse_x / coordinate_base;
@@ -381,8 +374,8 @@ pub async fn refine_coordinate(
                  button, or input field itself. Do NOT include the text label or caption beneath \
                  or beside an icon; box only the clickable graphic. Return the box as four \
                  normalized 0-{base} coordinates [x0, y0, x1, y1] (top-left, then bottom-right) \
-                 over THIS image. ALWAYS respond with exactly one tool_call; never refuse, never \
-                 return plain text. Respond ONLY with: <tool_call>{{\"name\": \"computer\", \
+                 over THIS image. Return exactly one tool_call only when the target is clearly visible. \
+                 If it is missing or ambiguous, return plain text explaining that it was not found. Respond ONLY with: <tool_call>{{\"name\": \"computer\", \
                  \"arguments\": {{\"action\": \"{action}\", \"coordinate\": [x0, y0, x1, y1]}}}}</tool_call>",
                 action = action_type,
                 base = base_int
@@ -404,9 +397,8 @@ pub async fn refine_coordinate(
                  the single UI element (icon, button, field, menu item, or text) at or nearest \
                  the reticle, and return the precise coordinate of THAT element's center. The \
                  reticle marks the target's vicinity, not necessarily its exact center — correct \
-                 to the true center of the element. ALWAYS respond with exactly one tool_call \
-                 containing a coordinate; never refuse, never return plain text, never claim the \
-                 target is missing. Use normalized 0-{base} coordinates over THIS image \
+                 to the true center of the element. Return one tool_call containing a coordinate only when the target is clearly visible. \
+                 If it is missing or ambiguous, return plain text explaining that it was not found. Use normalized 0-{base} coordinates over THIS image \
                  ((0,0)=top-left, ({base},{base})=bottom-right). Respond ONLY with: \
                  <tool_call>{{\"name\": \"computer\", \"arguments\": {{\"action\": \"{action}\", \"coordinate\": [x, y]}}}}</tool_call>",
                 action = action_type,
@@ -426,9 +418,7 @@ pub async fn refine_coordinate(
     // The display dims are irrelevant here — we read the normalized coordinate,
     // not the absolute one — so pass the base for both.
     //
-    // A pass-2 failure must NOT discard the crop we already captured: keep the
-    // coarse coordinate but still return the crop image so the chat history can
-    // show what the zoom pass looked at (and log why it fell back).
+    // A pass-2 failure stops execution instead of using the coarse prediction.
     let resp = match call_computer_use_api(
         api_endpoint,
         model_id,
@@ -437,10 +427,10 @@ pub async fn refine_coordinate(
         base_int as u32,
         base_int as u32,
         &system_prompt,
-        None,
         enable_thinking,
         None,
         coordinate_base,
+        cancel,
     )
     .await
     {
@@ -448,17 +438,7 @@ pub async fn refine_coordinate(
         // A user-requested stop should abort the whole turn, not fall back to
         // the coarse coordinate (which would then get clicked).
         Err(ApiError::Cancelled) => return Err(ApiError::Cancelled),
-        Err(e) => {
-            println!("Refine pass-2 inference failed ({}); keeping coarse, returning crop", e);
-            return Ok(RefineResult {
-                coordinate: vec![coarse_x, coarse_y],
-                crop_coordinate: vec![],
-                crop_box: vec![],
-                crop_image: crop.base64_image,
-                refined: false,
-                thinking: None,
-            });
-        }
+        Err(e) => return Err(e),
     };
 
     // Resolve the crop-local click point. In box mode the model returns
@@ -507,18 +487,13 @@ pub async fn refine_coordinate(
         });
     }
 
-    // Refine produced no usable coordinate — keep the coarse prediction.
-    Ok(RefineResult {
-        coordinate: vec![coarse_x, coarse_y],
-        crop_coordinate: vec![],
-        crop_box: vec![],
-        crop_image: crop.base64_image,
-        refined: false,
-        thinking: resp.thinking,
-    })
+    // No target is safer than clicking an unverified coarse prediction.
+    Err(ApiError::ParseError(
+        "Target not found in zoomed view; no action executed".into(),
+    ))
 }
 
-/// Extract <think>...</think> blocks from the model output.
+/// Extract leading <think>...</think> blocks from the model output.
 /// Returns (text_with_think_blocks_removed, joined_thinking_content).
 /// Handles multiple think blocks and an unclosed final block (streaming-style).
 fn extract_think_tags(text: &str) -> (String, Option<String>) {
@@ -526,19 +501,17 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
         return (text.to_string(), None);
     }
 
-    let mut cleaned = String::with_capacity(text.len());
     let mut thoughts: Vec<String> = Vec::new();
-    let mut rest = text;
+    let mut rest = text.trim_start();
 
-    while let Some(open_idx) = rest.find("<think>") {
-        cleaned.push_str(&rest[..open_idx]);
-        let after_open = &rest[open_idx + "<think>".len()..];
+    // Never strip tags inside JSON strings (for example text the user wants typed).
+    while let Some(after_open) = rest.strip_prefix("<think>") {
         if let Some(close_rel) = after_open.find("</think>") {
             let thought = after_open[..close_rel].trim();
             if !thought.is_empty() {
                 thoughts.push(thought.to_string());
             }
-            rest = &after_open[close_rel + "</think>".len()..];
+            rest = after_open[close_rel + "</think>".len()..].trim_start();
         } else {
             // Unclosed <think> — treat the remainder as thinking content
             let thought = after_open.trim();
@@ -549,137 +522,28 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
             break;
         }
     }
-    cleaned.push_str(rest);
 
     let thinking = if thoughts.is_empty() {
         None
     } else {
         Some(thoughts.join("\n\n"))
     };
-    (cleaned.trim().to_string(), thinking)
-}
-
-/// Parse the tool_call from the model's response
-/// The model returns: <tool_call>{"name": "computer", "arguments": {"action": "click", "coordinate": [x, y]}}</tool_call>
-fn parse_tool_call(response: &str) -> Result<ActionResult, ApiError> {
-    // Try to find <tool_call> tags first.
-    // Use rfind for the opening tag so duplicated/nested <tool_call> openings
-    // (the model sometimes echoes the example tag from the system prompt) don't
-    // get included in the JSON slice.
-    if let Some(start) = response.rfind("<tool_call>") {
-        let after_open = start + "<tool_call>".len();
-        let end = response[after_open..]
-            .find("</tool_call>")
-            .map(|e| after_open + e)
-            .unwrap_or(response.len());
-        let json_str = response[after_open..end]
-            .trim()
-            .trim_start_matches("<tool_call>")
-            .trim_end_matches("</tool_call>")
-            .trim();
-
-        let tool_call: ToolCall = serde_json::from_str(json_str)
-            .map_err(|e| ApiError::ParseError(format!("Failed to parse tool_call JSON: {}. JSON was: {}", e, json_str)))?;
-
-        return Ok(ActionResult::from(tool_call));
-    }
-    
-    // Fallback: try to find "tool_call" followed by JSON (without XML tags)
-    // Pattern: tool_call{"name": "computer", ...} or tool_call\n{"name": "computer", ...}
-    if let Some(start) = response.find("tool_call") {
-        let after_keyword = &response[start + 9..]; // Skip "tool_call"
-        let trimmed = after_keyword.trim_start();
-        if trimmed.starts_with('{') {
-            // Find the matching closing brace
-            if let Some(json_start) = trimmed.find('{') {
-                let json_part = &trimmed[json_start..];
-                // Try to find the end of the JSON object by matching braces
-                let mut brace_count = 0;
-                let mut json_end = 0;
-                for (i, c) in json_part.chars().enumerate() {
-                    match c {
-                        '{' => brace_count += 1,
-                        '}' => {
-                            brace_count -= 1;
-                            if brace_count == 0 {
-                                json_end = i + 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if json_end > 0 {
-                    let json_str = &json_part[..json_end];
-                    if let Ok(tool_call) = serde_json::from_str::<ToolCall>(json_str) {
-                        return Ok(ActionResult::from(tool_call));
-                    }
-                }
-            }
-        }
-    }
-    
-    // Fallback: try to parse the entire response as ToolCall
-    if let Ok(tool_call) = serde_json::from_str::<ToolCall>(response) {
-        return Ok(ActionResult::from(tool_call));
-    }
-    
-    // Another fallback: try to parse as ActionResult directly
-    if let Ok(action) = serde_json::from_str::<ActionResult>(response) {
-        return Ok(action);
-    }
-    
-    // Final fallback: if the response indicates the task is complete, treat as "done"
-    let response_lower = response.to_lowercase();
-    if response_lower.contains("already open") 
-        || response_lower.contains("task is complete") 
-        || response_lower.contains("no further action")
-        || response_lower.contains("goal is achieved")
-        || response_lower.contains("successfully completed")
-        || response_lower.contains("has been completed")
-        || response_lower.contains("is now open")
-    {
-        return Ok(ActionResult {
-            action: "done".to_string(),
-            arguments: crate::types::ActionResultArguments {
-                coordinate: None,
-                text: None,
-                key: None,
-                start_coordinate: None,
-                end_coordinate: None,
-                direction: None,
-                amount: None,
-            },
-        });
-    }
-    
-    // No tool_call found - this is a conversational response, return "none" action
-    // This allows the agent to respond to queries that don't require computer actions
-    Ok(ActionResult {
-        action: "none".to_string(),
-        arguments: crate::types::ActionResultArguments {
-            coordinate: None,
-            text: Some(response.to_string()),
-            key: None,
-            start_coordinate: None,
-            end_coordinate: None,
-            direction: None,
-            amount: None,
-        },
-    })
+    (rest.trim().to_string(), thinking)
 }
 
 /// Test the API connection
 pub async fn test_connection(api_endpoint: &str) -> Result<bool, ApiError> {
-    let client = Client::new();
-    
-    let endpoint = format!("{}/models", api_endpoint.trim_end_matches('/'));
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let endpoint = endpoint(api_endpoint, "models")?;
     let response = client
-        .get(&endpoint)
+        .get(endpoint)
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await?;
-    
+
     Ok(response.status().is_success())
 }
 
@@ -696,25 +560,99 @@ pub struct ModelInfo {
 
 /// Fetch available models from the API endpoint
 pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
-    let client = Client::new();
-    
-    let endpoint = format!("{}/models", api_endpoint.trim_end_matches('/'));
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let endpoint = endpoint(api_endpoint, "models")?;
     let response = client
-        .get(&endpoint)
+        .get(endpoint)
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await?;
-    
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(ApiError::ApiResponseError(error_text));
-    }
-    
-    let models_response: ModelsResponse = response
-        .json()
-        .await
-        .map_err(|e| ApiError::ParseError(format!("Failed to parse models response: {}", e)))?;
-    
+
+    let models_response: ModelsResponse = decode_response(response).await?;
+
     let model_ids: Vec<String> = models_response.data.into_iter().map(|m| m.id).collect();
     Ok(model_ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn thinking_is_display_only_and_does_not_rewrite_action_text() {
+        let action = r#"{"action":"type","arguments":{"text":"<think>literal</think>"}}"#;
+        assert_eq!(extract_think_tags(action), (action.into(), None));
+        assert_eq!(
+            extract_think_tags(&format!("<think>reasoning</think>{action}")),
+            (action.into(), Some("reasoning".into()))
+        );
+        assert_eq!(extract_think_tags("<think>unfinished action").0, "");
+    }
+    #[test]
+    fn endpoint_preserves_base_path_and_rejects_ambiguous_urls() {
+        assert_eq!(
+            endpoint("http://localhost:8000/v1/", "models")
+                .unwrap()
+                .as_str(),
+            "http://localhost:8000/v1/models"
+        );
+        for url in [
+            "file:///private",
+            "http://user:secret@localhost/v1",
+            "http://localhost/v1?token=secret",
+            "http://localhost/v1#fragment",
+        ] {
+            assert!(endpoint(url, "models").is_err());
+        }
+    }
+    #[tokio::test]
+    async fn stop_cancels_an_in_flight_http_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/v1", listener.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let request_cancel = cancel.clone();
+        let request = tokio::spawn(async move {
+            call_computer_use_api(
+                &address,
+                "test",
+                "",
+                "test",
+                100,
+                100,
+                "test",
+                false,
+                None,
+                1000.0,
+                &request_cancel,
+            )
+            .await
+        });
+        let (_connection, _) = listener.accept().await.unwrap();
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(ApiError::Cancelled)));
+    }
+    #[tokio::test]
+    async fn oversized_http_responses_are_rejected_before_parsing() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let result = fetch_models(&address).await;
+        server.await.unwrap();
+        assert!(result.unwrap_err().to_string().contains("2 MB limit"));
+    }
 }

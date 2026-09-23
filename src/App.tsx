@@ -17,6 +17,8 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [autoExecute, setAutoExecute] = useState(false);
   const [multiTurnMode, setMultiTurnMode] = useState(true);
+  const [supervised, setSupervised] = useState(true);
+  const [planOnly, setPlanOnly] = useState(false);
   // Dry run: ask the model for one action and draw a crosshair where it would
   // click, without moving the mouse. For calibrating coordinate accuracy.
   const [dryRun, setDryRun] = useState(false);
@@ -33,6 +35,7 @@ function App() {
     isMultiTurnRunning,
     isStopping,
     pendingConfirmation,
+    task,
     processQuery,
     executeAction,
     runMultiTurn,
@@ -82,17 +85,14 @@ function App() {
     return () => clearTimeout(timer);
   }, [settings.apiEndpoint, settings.modelId, testConnection]);
 
-  // Auto-save session when task completes (multi-turn mode finishes)
+  // Save every finished multi-turn checkpoint, including stopped/failed tasks.
   const prevIsMultiTurnRunning = useRef(isMultiTurnRunning);
   useEffect(() => {
     // Detect when multi-turn just finished (was running, now not running)
     if (prevIsMultiTurnRunning.current && !isMultiTurnRunning && messages.length > 0) {
-      // Check if the last message indicates completion (not an error)
+      // Structured checkpoints do not depend on model-authored completion prose.
       const lastMessage = messages[messages.length - 1];
-      if (lastMessage.role === 'system' &&
-          (lastMessage.content.includes('✓ Task completed') ||
-           lastMessage.content.includes('stopped by user') ||
-           lastMessage.content.includes('Action denied'))) {
+      if (lastMessage.task) {
         (async () => {
           const result = await saveSession(messages, {
             includeScreenshots: settingsRef.current.saveScreenshotsInSessions,
@@ -132,10 +132,14 @@ function App() {
       return;
     }
 
-    if (multiTurnMode) {
+    if (multiTurnMode || planOnly) {
       // Multi-turn mode: run until task is complete. Connection status is
       // handled by the periodic check — a failed run shouldn't show Connected.
-      await runMultiTurn(query, settings, () => updateSettings({ autoApproveConfirmations: true }));
+      try {
+        await runMultiTurn(query, settings, supervised, false, planOnly);
+      } finally {
+        setSupervised(true);
+      }
     } else {
       // Single-turn mode: just get one action
       const response = await processQuery(query, settings);
@@ -144,7 +148,7 @@ function App() {
         setIsConnected(true);
         // "none" (conversational reply) and "done" have nothing to execute —
         // don't offer an Execute button that would just error.
-        if (!['none', 'done'].includes(response.action.action)) {
+        if (!['none', 'done', 'confirm', 'plan'].includes(response.action.action)) {
           setLastAction(response.action);
           if (autoExecute) {
             await handleExecuteAction(response.action);
@@ -182,6 +186,7 @@ function App() {
         <div className="flex items-center gap-3">
           {/* Multi-turn mode toggle */}
           <button
+            disabled={isProcessing}
             onClick={() => setMultiTurnMode(!multiTurnMode)}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
               multiTurnMode
@@ -215,13 +220,13 @@ function App() {
             </button>
           )}
 
-          {/* Stop button - only show during multi-turn execution */}
-          {isMultiTurnRunning && (
+          {/* Stop covers single-turn inference, input, and multi-turn execution. */}
+          {isProcessing && (
             <button
               onClick={stopMultiTurn}
               disabled={isStopping}
               className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30 transition-all disabled:opacity-60 disabled:cursor-wait"
-              title="Stop multi-turn execution"
+              title="Stop execution (Ctrl+Alt+F12 works outside this window)"
             >
               <StopCircle className={`w-4 h-4 ${isStopping ? 'animate-pulse' : ''}`} />
               <span className="text-sm">{isStopping ? 'Stopping…' : 'Stop'}</span>
@@ -250,8 +255,8 @@ function App() {
 
           {/* Clear chat */}
           <button
-            onClick={clearMessages}
-            disabled={messages.length === 0}
+            onClick={() => { setLastAction(null); clearMessages(); }}
+            disabled={messages.length === 0 || isProcessing}
             className="p-2 rounded-lg bg-dark-800 hover:bg-dark-700 text-dark-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="Clear chat"
           >
@@ -293,6 +298,23 @@ function App() {
         </div>
       </header>
 
+      <div className="px-6 py-3 border-b border-dark-700 bg-dark-900 space-y-2">
+        <div className="flex flex-wrap items-center gap-5 text-sm text-dark-200">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={supervised} disabled={isProcessing} onChange={e=>setSupervised(e.target.checked)} />Review each action</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={planOnly} disabled={isProcessing} onChange={e=>setPlanOnly(e.target.checked)} />Plan only</label>
+          <span className="text-xs text-dark-400">Emergency stop: Ctrl+Alt+F12</span>
+          {task && task.status !== 'completed' && <button disabled={isProcessing} className="px-3 py-1 rounded bg-primary-500/20 text-primary-300 disabled:opacity-50" onClick={async()=>{
+            setLastAction(null); setPlanOnly(false);
+            try { await runMultiTurn('Continue the original task from the current screen.',settings,supervised,true); } finally { setSupervised(true); }
+          }}>Continue task</button>}
+        </div>
+        {!supervised && <p className="text-sm text-amber-400">Direct control for this run: mouse and keyboard actions execute without review.</p>}
+        {task && <details className="text-sm text-dark-300" open={task.status==='planning' || planOnly}>
+          <summary className="cursor-pointer">Task: {task.status.replace('_',' ')} — {task.goal.slice(0,100)}</summary>
+          <ol className="list-decimal ml-5 mt-2 max-h-32 overflow-y-auto">{task.plan.map((step,i)=><li key={i}>{step}</li>)}</ol>
+        </details>}
+      </div>
+
       {/* Main content */}
       <main className="flex-1 flex overflow-hidden">
         {/* Left panel - Chat/History */}
@@ -311,6 +333,7 @@ function App() {
               Current Chat
             </button>
             <button
+              disabled={isProcessing}
               onClick={() => setActiveTab('history')}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
                 activeTab === 'history'
@@ -338,7 +361,7 @@ function App() {
                 <div className="px-4 py-2 border-t border-dark-700">
                   <button
                     onClick={() => handleExecuteAction(lastAction)}
-                    disabled={isExecuting}
+                    disabled={isExecuting || isProcessing}
                     className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-gradient-to-r from-green-500 to-green-600 hover:from-green-400 hover:to-green-500 text-white font-medium transition-all shadow-lg shadow-green-500/25 disabled:opacity-50"
                   >
                     <MousePointer className="w-4 h-4" />
@@ -356,6 +379,7 @@ function App() {
             <SessionHistory
               sessions={sessions}
               onLoadSession={(loadedMessages) => {
+                setLastAction(null);
                 setMessages(loadedMessages);
                 setActiveTab('chat');
               }}
@@ -383,7 +407,7 @@ function App() {
             
             {/* Content */}
             <div className="px-6 py-5">
-              <p className="text-dark-200 leading-relaxed">
+              <p className="text-dark-200 leading-relaxed whitespace-pre-wrap break-words max-h-72 overflow-y-auto">
                 {pendingConfirmation.message}
               </p>
             </div>
@@ -407,12 +431,12 @@ function App() {
                 </button>
               </div>
               <button
-                onClick={pendingConfirmation.onAlwaysAllow}
+                onClick={stopMultiTurn}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-dark-700/60 hover:bg-dark-700 text-dark-300 hover:text-white text-sm transition-all border border-dark-600"
-                title="Approve this action and skip future confirmations. You can re-enable in Settings."
+                title="Cancel the task and this approval"
               >
-                <Check className="w-3.5 h-3.5" />
-                <span>Always Allow (skip future confirmations)</span>
+                <StopCircle className="w-3.5 h-3.5" />
+                <span>Stop task (Ctrl+Alt+F12)</span>
               </button>
             </div>
           </div>

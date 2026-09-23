@@ -288,21 +288,21 @@ export function SettingsPanel({
           <div className="flex items-center justify-between">
             <div>
               <label className="block text-sm font-medium text-dark-300">
-                Always Allow Sensitive Actions
+                Plan Before Acting
               </label>
               <p className="text-xs text-dark-500">
-                Skip the confirmation dialog for delete, download, install, and other sensitive actions. Off by default.
+                Create a short plan and keep it in task context during multi-step work.
               </p>
             </div>
             <button
-              onClick={() => onUpdateSettings({ autoApproveConfirmations: !settings.autoApproveConfirmations })}
+              onClick={() => onUpdateSettings({ enablePlanning: !settings.enablePlanning })}
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                settings.autoApproveConfirmations ? 'bg-primary-500' : 'bg-dark-600'
+                settings.enablePlanning ? 'bg-primary-500' : 'bg-dark-600'
               }`}
             >
               <span
                 className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  settings.autoApproveConfirmations ? 'translate-x-6' : 'translate-x-1'
+                  settings.enablePlanning ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>
