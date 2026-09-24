@@ -16,11 +16,13 @@ Build for production with `npm run tauri build`.
 1. Start your local vision model server. In Settings, enter its API base URL (such as `http://localhost:8000/v1`) and the exact model ID exposed by that server.
 2. Test the connection. Put the target application on the **primary monitor** and keep its controls visible beside this controller.
 3. Enter a task with clear completion criteria. Planning is enabled by default. Select **Plan only** to inspect milestones before any input executes.
-4. Leave **Review each action** enabled. Approve or deny proposed mouse/keyboard actions. Each approval applies to one exact action and expires after 60 seconds.
+4. With **Review each action** enabled, choose **Allow once** for one action or **Allow for this task** to let the remaining mouse/keyboard actions run automatically. The dialog previews the proposed click. An unanswered proposal expires after 60 seconds.
 5. Use **Continue task** to resume with a fresh screenshot and the original goal. Restoring a session never restores permission to execute.
 6. Press **Stop**, or **Ctrl+Alt+F12** even while another application has focus, to cancel. Cancellation cannot undo input already delivered to Windows.
 
-Single-turn mode proposes one action for manual execution. Multi-turn mode plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. Clearing **Review each action** enables direct control for that run; it resets to reviewed control afterwards.
+Every submitted task plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. There is no separate execution-mode switch. Clearing **Review each action** before starting, or choosing **Allow for this task** during a run, enables direct control until that run ends. New or resumed runs start with reviewed control unless explicitly changed. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
+
+Enable **Precision clicks** in the task toolbar to check each click in a magnified crop before submitting input. It is on by default for new settings; previously saved choices are preserved. The crop comes from the same native screenshot as the initial prediction, and targets are identified using the goal, milestone and expected result. Only the corrected click is executed. The crop is not overlaid with a reticle that could distract the model. This helps with small icons but cannot guarantee model accuracy.
 
 ## Staying on task
 
@@ -53,7 +55,7 @@ Click the intended target before typing or pressing keys. If it changes or becom
 | Plan Before Acting | Generate milestones before a new multi-turn task |
 | Thinking mode | Show returned reasoning separately; reasoning is never executed or replayed |
 | Screenshot Max Dimension | Resize the primary screen image (256–3840 pixels) |
-| Zoom Refine / box mode | Optional second targeting pass; inconclusive refinement stops execution |
+| Precision clicks / box mode | Check a magnified crop of the same observation; inconclusive refinement stops execution |
 | Action Delay / Max Turns | Allow UI changes and bound the loop |
 | Save Screenshots in Sessions | Include images in saved/exported history; off by default |
 
@@ -93,7 +95,14 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D w
 cargo audit --file src-tauri/Cargo.lock
 ```
 
-Install the audit tool with `cargo install cargo-audit --locked` if needed. Windows CI runs these checks and builds the executable. Regression tests never send live desktop input. The ignored `capture_primary_monitor_smoke` Rust test can be run manually with `-- --ignored` on an interactive desktop; it captures in memory without sending input or saving the image.
+Install the audit tool with `cargo install cargo-audit --locked` if needed. Windows CI runs these checks and builds the executable. Regression tests never send live desktop input. To check capture geometry on an interactive desktop, run `cargo test --manifest-path src-tauri/Cargo.toml capture_primary_monitor_smoke -- --ignored`; it captures in memory without sending input or saving the image.
+
+An optional local-model test checks point and box refinement against a synthetic taskbar image. It starts with a deliberately high estimate and verifies that the corrected point falls inside the target icon. No desktop input is sent:
+
+```powershell
+$env:VISION_TEST_ENDPOINT = 'http://127.0.0.1:8889/v1'
+cargo test --manifest-path src-tauri/Cargo.toml local_vision_precision_probe -- --ignored --nocapture
+```
 
 Dependency updates replace `screenshots` with `xcap`, remove the unused shell plugin and unnecessary image decoders, and refresh both lockfiles. See [SECURITY.md](SECURITY.md) for remaining upstream warnings and validation limits.
 

@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 const settings = {
   ...DEFAULT_SETTINGS,
   enablePlanning: false,
+  zoomRefine: false,
   actionDelayMs: 0,
   maxTurns: 8,
 };
@@ -58,8 +59,11 @@ beforeEach(() => {
           action: JSON.parse(args.action as string),
           requires_approval: supervised,
         };
-      if (['approve_action', 'execute_action', 'stop_run'].includes(command))
+      if (command === 'approve_action') {
+        if (args.allowForTask) supervised = false;
         return;
+      }
+      if (['execute_action', 'stop_run'].includes(command)) return;
       throw Error('Unexpected command ' + command);
     },
   );
@@ -67,6 +71,136 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('agent controller safety', () => {
+  it('allows the rest of a task from one prompt, but new runs still require approval', async () => {
+    const observed = {
+      status: 'succeeded' as const,
+      evidence: 'New page visible',
+    };
+    responses = [
+      reply('key', { key: 'enter' }),
+      reply('key', { key: 'tab' }, { outcome: observed }),
+      reply('done', { text: 'Requested page visible' }, { outcome: observed }),
+      reply('done', { text: 'Requested page still visible' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Open page', settings);
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation?.onAllowTask).toBeDefined(),
+    );
+    await act(async () => {
+      result.current.pendingConfirmation!.onAllowTask!();
+      await task;
+    });
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'approve_action'),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.find((c) => c[0] === 'approve_action')![1]
+        .allowForTask,
+    ).toBe(true);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(2);
+    expect(result.current.task?.status).toBe('completed');
+    expect(result.current.isDirectControl).toBe(false);
+    responses = [reply('key', { key: 'enter' })];
+    act(() => {
+      task = result.current.runTask('Another task', settings);
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation?.onAllowTask).toBeDefined(),
+    );
+    const lateAllow = result.current.pendingConfirmation!.onAllowTask!;
+    await act(async () => {
+      result.current.stopTask();
+      lateAllow();
+      await task;
+    });
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'approve_action'),
+    ).toHaveLength(1);
+  });
+
+  it('does not offer task-wide permission for a model question', async () => {
+    responses = [reply('confirm', { text: 'Which report should I open?' })];
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Open report', settings, false);
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation).not.toBeNull(),
+    );
+    expect(result.current.pendingConfirmation?.onAllowTask).toBeUndefined();
+    await act(async () => {
+      result.current.pendingConfirmation!.onDeny();
+      await task;
+    });
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'approve_action')).toBe(
+      false,
+    );
+  });
+
+  it('refines the same observation using task context and executes only the corrected point', async () => {
+    responses = [
+      reply(
+        'click',
+        { coordinate: [146, 900] },
+        { expected_outcome: 'Chrome opens' },
+      ),
+    ];
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'refine_coordinate'
+        ? Promise.resolve({
+            coordinate: [146, 980],
+            crop_image: 'zoom',
+            crop_coordinate: [487, 934],
+            crop_box: [],
+            refined: true,
+          })
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Find weather in Philadelphia', {
+        ...settings,
+        zoomRefine: true,
+        maxTurns: 1,
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation).not.toBeNull(),
+    );
+    const refinement = mocks.invoke.mock.calls.find(
+      (c) => c[0] === 'refine_coordinate',
+    )![1];
+    expect(refinement.observationId).toBe('obs-1');
+    expect(refinement.query).toContain('Find weather in Philadelphia');
+    expect(refinement.query).toContain('Chrome opens');
+    expect(result.current.pendingConfirmation!.preview).toEqual({
+      image: 'zoom',
+      coordinate: [487, 934],
+    });
+    await act(async () => {
+      result.current.pendingConfirmation!.onAllowTask!();
+      await task;
+    });
+    const prepared = mocks.invoke.mock.calls.find(
+      (c) => c[0] === 'prepare_action',
+    )![1];
+    expect(JSON.parse(prepared.action).arguments.coordinate).toEqual([
+      146, 980,
+    ]);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+  });
+
   it('repairs a rejected wire response with its exact error and output before preparing input', async () => {
     const rejected =
       '<tool_call>{"name":"computer","arguments":{"action":"key","keys":["enter"]}}</tool_call>';
@@ -83,7 +217,7 @@ describe('agent controller safety', () => {
     const { result } = renderHook(() => useAgent());
     let task!: Promise<void>;
     act(() => {
-      task = result.current.runMultiTurn('Open the selected item', {
+      task = result.current.runTask('Open the selected item', {
         ...settings,
         maxTurns: 2,
       });
@@ -124,7 +258,7 @@ describe('agent controller safety', () => {
     responses = [invalid, invalid];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn('Open browser', settings);
+      await result.current.runTask('Open browser', settings);
     });
     expect(result.current.task?.status).toBe('needs_user');
     expect(result.current.messages.filter((m) => m.modelResponse)).toHaveLength(
@@ -200,7 +334,7 @@ describe('agent controller safety', () => {
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
+      await result.current.runTask(
         'Save report',
         { ...settings, enablePlanning: true },
         false,
@@ -236,7 +370,7 @@ describe('agent controller safety', () => {
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
+      await result.current.runTask(
         'Save report',
         { ...settings, enablePlanning: true },
         false,
@@ -269,7 +403,7 @@ describe('agent controller safety', () => {
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
+      await result.current.runTask(
         'Open report',
         { ...settings, enablePlanning: true },
         false,
@@ -327,7 +461,7 @@ describe('agent controller safety', () => {
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
+      await result.current.runTask(
         'Open report',
         { ...settings, enablePlanning: true, maxTurns: 10 },
         false,
@@ -363,7 +497,7 @@ describe('agent controller safety', () => {
     const { result } = renderHook(() => useAgent());
     let task!: Promise<void>;
     act(() => {
-      task = result.current.runMultiTurn(
+      task = result.current.runTask(
         'Open report',
         { ...settings, enablePlanning: true },
         false,
@@ -371,7 +505,7 @@ describe('agent controller safety', () => {
     });
     await waitFor(() => expect(resolveReview).toBeDefined());
     await act(async () => {
-      result.current.stopMultiTurn();
+      result.current.stopTask();
       resolveReview(
         reply(
           'done',
@@ -401,14 +535,14 @@ describe('agent controller safety', () => {
     const { result } = renderHook(() => useAgent());
     let task!: Promise<void>;
     act(() => {
-      task = result.current.runMultiTurn('Click the editor', settings);
+      task = result.current.runTask('Click the editor', settings);
     });
     await waitFor(() =>
       expect(result.current.pendingConfirmation).not.toBeNull(),
     );
     const lateAllow = result.current.pendingConfirmation!.onConfirm;
     await act(async () => {
-      result.current.stopMultiTurn();
+      result.current.stopTask();
       lateAllow();
       await task;
     });
@@ -432,11 +566,11 @@ describe('agent controller safety', () => {
     const { result } = renderHook(() => useAgent());
     let task!: Promise<void>;
     act(() => {
-      task = result.current.runMultiTurn('Test', settings);
+      task = result.current.runTask('Test', settings);
     });
     await waitFor(() => expect(captureResolve).toBeDefined());
     await act(async () => {
-      result.current.stopMultiTurn();
+      result.current.stopTask();
       captureResolve({ base64_image: '', observation_id: 'obs' });
       await task;
     });
@@ -463,7 +597,7 @@ describe('agent controller safety', () => {
     const { result } = renderHook(() => useAgent());
     let task!: Promise<void>;
     act(() => {
-      task = result.current.runMultiTurn('Save', settings);
+      task = result.current.runTask('Save', settings);
     });
     await waitFor(() =>
       expect(result.current.pendingConfirmation).not.toBeNull(),
@@ -485,29 +619,29 @@ describe('agent controller safety', () => {
     expect(result.current.task?.status).toBe('completed');
   });
 
-  it('preserves single-turn follow-up context and clears it for a new chat', async () => {
+  it('keeps a debug preview isolated and revokes its run even when it proposes input', async () => {
     responses = [
-      reply('none', { text: 'Noted' }),
-      reply('none', { text: 'Continuing' }),
-      reply('none', { text: 'Fresh' }),
+      reply('plan', { text: 'Open Notepad' }),
+      reply('click', { coordinate: [200, 400] }),
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.processQuery('Remember Notepad', settings);
-      await result.current.processQuery('Which app?', settings);
+      await result.current.runTask('Open Notepad', settings, true, false, true);
     });
-    const calls = mocks.invoke.mock.calls.filter(
-      (c) => c[0] === 'process_computer_use',
-    );
-    expect(calls[1][1].priorTurns[0].user_query).toContain('Remember Notepad');
+    const checkpoint = structuredClone(result.current.task);
     await act(async () => {
-      result.current.clearMessages();
-      await result.current.processQuery('New question', settings);
+      await result.current.previewAction('Preview the browser icon', settings);
     });
+    expect(result.current.task).toEqual(checkpoint);
+    expect(result.current.messages.at(-1)?.content).toContain('Preview only — no input executed.');
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'prepare_action')).toBe(
+      false,
+    );
+    expect(mocks.invoke.mock.calls.at(-1)?.[0]).toBe('stop_run');
     expect(
-      mocks.invoke.mock.calls.filter(
-        (c) => c[0] === 'process_computer_use',
-      )[2][1].priorTurns,
+      mocks.invoke.mock.calls
+        .filter((c) => c[0] === 'process_computer_use')
+        .at(-1)![1].priorTurns,
     ).toEqual([]);
   });
 
@@ -528,11 +662,7 @@ describe('agent controller safety', () => {
     );
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
-        'Test',
-        { ...settings, maxTurns: 3 },
-        false,
-      );
+      await result.current.runTask('Test', { ...settings, maxTurns: 3 }, false);
     });
     expect(
       mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
@@ -544,7 +674,7 @@ describe('agent controller safety', () => {
     responses = [reply('plan', { text: 'Open the document\nSave the report' })];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
+      await result.current.runTask(
         'Save report to Reports',
         settings,
         true,
@@ -558,7 +688,7 @@ describe('agent controller safety', () => {
     );
     responses = [reply('none', { text: 'Need document path' })];
     await act(async () => {
-      await result.current.runMultiTurn('Continue', settings, true, true);
+      await result.current.runTask('Continue', settings, true, true);
     });
     const latest = mocks.invoke.mock.calls
       .filter((c) => c[0] === 'process_computer_use')
@@ -572,7 +702,7 @@ describe('agent controller safety', () => {
     responses = [reply('click', { coordinate: [500, 500] })];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runMultiTurn(
+      await result.current.runTask(
         'Click editor',
         { ...settings, zoomRefine: true },
         false,

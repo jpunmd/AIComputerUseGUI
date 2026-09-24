@@ -21,7 +21,10 @@ export interface ConfirmationRequest {
   message: string;
   onConfirm: () => void;
   onDeny: () => void;
+  onAllowTask?: () => void;
+  preview?: { image: string; coordinate: number[] };
 }
+type Approval = false | 'once' | 'task';
 interface Proposal {
   id: string;
   action: ActionResult;
@@ -47,8 +50,9 @@ export function useAgent() {
   const [messages, updateMessages] = useState<Message[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
-  const [isMultiTurnRunning, setIsMultiTurnRunning] = useState(false);
+  const [isTaskRunning, setIsTaskRunning] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [isDirectControl, setIsDirectControl] = useState(false);
   const [pendingConfirmation, setPendingConfirmation] =
     useState<ConfirmationRequest | null>(null);
   const [task, setTask] = useState<TaskRecord | null>(null);
@@ -56,7 +60,8 @@ export function useAgent() {
   const stopped = useRef(false);
   const runId = useRef<string | null>(null);
   const observation = useRef<string | null>(null);
-  const confirmation = useRef<((value: boolean) => void) | null>(null);
+  const confirmation = useRef<((value: Approval) => void) | null>(null);
+  const actionPreview = useRef<ConfirmationRequest['preview']>();
   const memory = useRef(new TaskMemory());
 
   const publishTask = useCallback(
@@ -86,7 +91,7 @@ export function useAgent() {
     return runId.current;
   }, []);
 
-  const stopMultiTurn = useCallback(() => {
+  const stopTask = useCallback(() => {
     stopped.current = true;
     if (busy.current) setIsStopping(true);
     confirmation.current?.(false);
@@ -97,16 +102,17 @@ export function useAgent() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen('agent-stopped', stopMultiTurn);
+    const unlisten = listen('agent-stopped', stopTask);
     return () => {
-      stopMultiTurn();
+      stopTask();
       void unlisten.then((fn) => fn()).catch(() => {});
     };
-  }, [stopMultiTurn]);
+  }, [stopTask]);
 
   const start = useCallback(async (supervised: boolean) => {
     stopped.current = false;
     setIsStopping(false);
+    setIsDirectControl(!supervised);
     observation.current = null;
     const previous = runId.current;
     if (previous) await invoke('stop_run', { runId: previous });
@@ -124,25 +130,32 @@ export function useAgent() {
     runId.current = null;
     observation.current = null;
     if (id) await invoke('stop_run', { runId: id }).catch(() => {});
+    setIsDirectControl(false);
   }, []);
 
   const requestApproval = useCallback(
-    (text: string): Promise<boolean> => {
+    (
+      text: string,
+      allowTask = false,
+      preview?: ConfirmationRequest['preview'],
+    ): Promise<Approval> => {
       assertRunning();
       return new Promise((resolve) => {
         let settled = false;
-        const settle = (approved: boolean) => {
+        const settle = (approved: Approval) => {
           if (settled) return;
           settled = true;
           confirmation.current = null;
           setPendingConfirmation(null);
-          resolve(approved && !stopped.current);
+          resolve(stopped.current ? false : approved);
         };
         confirmation.current = settle;
         setPendingConfirmation({
           message: text,
-          onConfirm: () => settle(true),
+          onConfirm: () => settle('once'),
           onDeny: () => settle(false),
+          ...(allowTask ? { onAllowTask: () => settle('task') } : {}),
+          preview,
         });
       });
     },
@@ -162,6 +175,7 @@ export function useAgent() {
       observation.current = result.observation_id;
       memory.current.observe(result.observation_id);
       setCurrentScreenshot(result.base64_image);
+      actionPreview.current = undefined;
       return result;
     },
     [assertRunning],
@@ -223,6 +237,23 @@ export function useAgent() {
       }
       const point = response.action.arguments.coordinate;
       if (settings.zoomRefine && click && point?.length === 2) {
+        const plan = memory.current.task?.plan || [];
+        const target =
+          plan.find(
+            (s) => s.id === response.action.progress?.next_milestone_id,
+          ) ||
+          plan.find((s) => s.status === 'in_progress') ||
+          plan.find((s) => s.status === 'pending');
+        const targetContext = [
+          'Original task: ' + (memory.current.task?.goal || query),
+          target ? 'Current milestone: ' + target.title : '',
+          'Expected result of this click: ' +
+            (response.action.progress?.expected_outcome ||
+              target?.successCriteria ||
+              query),
+        ]
+          .filter(Boolean)
+          .join('\n');
         const refined = await invoke<{
           coordinate: number[];
           crop_image: string;
@@ -231,12 +262,13 @@ export function useAgent() {
           refined: boolean;
         }>('refine_coordinate', {
           runId: assertRunning(),
+          observationId: shot.observation_id,
           apiEndpoint: settings.apiEndpoint,
           modelId: settings.modelId,
           coarseX: point[0],
           coarseY: point[1],
           actionType: response.action.action,
-          query: query + '\nIntended action: ' + response.output_text,
+          query: targetContext,
           cropFraction: settings.zoomCropFraction,
           maxDimension: settings.screenshotMaxDimension,
           enableThinking: settings.enableThinking,
@@ -252,9 +284,19 @@ export function useAgent() {
         extras.zoomCropCoordinate = refined.crop_coordinate;
         extras.zoomCropBox = refined.crop_box;
       }
+      actionPreview.current =
+        extras.zoomCrop && extras.zoomCropCoordinate
+          ? { image: extras.zoomCrop, coordinate: extras.zoomCropCoordinate }
+          : response.action.arguments.coordinate
+            ? {
+                image: shot.base64_image,
+                coordinate: response.action.arguments.coordinate,
+              }
+            : undefined;
       message(
         'assistant',
-        response.output_text || JSON.stringify(response.action),
+        (step === undefined ? 'Preview only — no input executed.\n' : '') +
+          (response.output_text || JSON.stringify(response.action)),
         {
           action: response.action,
           screenshot: shot.base64_image,
@@ -295,13 +337,18 @@ export function useAgent() {
       if (proposal.requires_approval) {
         const allowed = await requestApproval(
           `${describeAction(proposal.action)}\n\nApproval expires after 60 seconds.`,
+          true,
+          actionPreview.current,
         );
         assertRunning();
         if (!allowed) throw new Error('Action denied by user');
         await invoke('approve_action', {
           runId: id,
           proposalId: proposal.id,
+          allowForTask: allowed === 'task',
         });
+        assertRunning();
+        if (allowed === 'task') setIsDirectControl(true);
       }
       assertRunning();
       await invoke('execute_action', {
@@ -315,7 +362,7 @@ export function useAgent() {
     [assertRunning, requestApproval, publishTask],
   );
 
-  const processQuery = useCallback(
+  const previewAction = useCallback(
     async (
       query: string,
       settings: Settings,
@@ -325,19 +372,13 @@ export function useAgent() {
       setIsProcessing(true);
       setError(null);
       message('user', query);
+      const taskMemory = memory.current;
+      memory.current = new TaskMemory();
       try {
         await start(true);
         const shot = await capture(settings);
         const response = await processTurn(query, settings, shot);
-        if (memory.current.task && response.action.progress) {
-          memory.current.applyProgress(response.action.progress);
-          publishTask();
-        }
-        if (
-          ['none', 'done', 'plan', 'confirm'].includes(response.action.action)
-        )
-          await finishRun();
-        // A manual action remains tied to this run/observation until executed or replaced.
+        // Preview is read-only; it cannot update the task or retain an input capability.
         return response;
       } catch (err) {
         const text = stopped.current ? 'Run stopped' : String(err);
@@ -346,6 +387,8 @@ export function useAgent() {
         await finishRun();
         return null;
       } finally {
+        await finishRun();
+        memory.current = taskMemory;
         busy.current = false;
         setIsProcessing(false);
         setIsStopping(false);
@@ -354,28 +397,7 @@ export function useAgent() {
     [capture, processTurn, message, start, finishRun, publishTask],
   );
 
-  const executeAction = useCallback(
-    async (action: ActionResult): Promise<boolean> => {
-      if (busy.current) return false;
-      busy.current = true;
-      setIsProcessing(true);
-      try {
-        await performAction(action);
-        return true;
-      } catch (err) {
-        setError(stopped.current ? 'Run stopped' : String(err));
-        return false;
-      } finally {
-        await finishRun();
-        busy.current = false;
-        setIsProcessing(false);
-        setIsStopping(false);
-      }
-    },
-    [performAction, finishRun],
-  );
-
-  const runMultiTurn = useCallback(
+  const runTask = useCallback(
     async (
       query: string,
       settings: Settings,
@@ -386,7 +408,7 @@ export function useAgent() {
       if (busy.current) return;
       busy.current = true;
       setIsProcessing(true);
-      setIsMultiTurnRunning(true);
+      setIsTaskRunning(true);
       setError(null);
       if (!resume || !memory.current.task)
         memory.current.start(query, settings.enablePlanning || planOnly);
@@ -405,7 +427,7 @@ export function useAgent() {
         ? query +
           '\nRecheck saved milestone evidence against this fresh screen. Historical facts are context, not current proof.'
         : query;
-      const timer = setTimeout(stopMultiTurn, 20 * 60 * 1000);
+      const timer = setTimeout(stopTask, 20 * 60 * 1000);
       try {
         await start(supervised);
         const maxTurns = Math.min(100, Math.max(1, settings.maxTurns || 20));
@@ -609,7 +631,7 @@ export function useAgent() {
         });
         busy.current = false;
         setIsProcessing(false);
-        setIsMultiTurnRunning(false);
+        setIsTaskRunning(false);
         setIsStopping(false);
         setCurrentTurn(0);
       }
@@ -620,7 +642,7 @@ export function useAgent() {
       processTurn,
       performAction,
       requestApproval,
-      stopMultiTurn,
+      stopTask,
       publishTask,
       message,
       start,
@@ -661,14 +683,14 @@ export function useAgent() {
     messages,
     error,
     currentTurn,
-    isMultiTurnRunning,
+    isTaskRunning,
     isStopping,
+    isDirectControl,
     pendingConfirmation,
     task,
-    processQuery,
-    executeAction,
-    runMultiTurn,
-    stopMultiTurn,
+    previewAction,
+    runTask,
+    stopTask,
     clearMessages,
     testConnection,
     setError,

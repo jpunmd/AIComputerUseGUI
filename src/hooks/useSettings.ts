@@ -56,7 +56,7 @@ export const DEFAULT_SETTINGS: Settings = {
   enableThinking: true, // Thinking mode on by default (Qwen3-VL thinking models)
   expandThinkingByDefault: false, // Thinking blocks collapsed by default; user clicks to expand
   enablePlanning: true,
-  zoomRefine: false, // Off by default; two-pass adds a second API call per click
+  zoomRefine: true, // Check the intended target in a magnified crop before clicking.
   zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
   boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default

@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::codecs::png::PngEncoder;
 use image::{imageops::FilterType, ImageEncoder, RgbaImage};
+use std::sync::Arc;
 use thiserror::Error;
 use xcap::Monitor;
 
@@ -34,13 +35,13 @@ fn calculate_resized_dimensions(width: u32, height: u32, max_dimension: u32) -> 
 }
 
 /// Resize an image to fit within max_dimension while maintaining aspect ratio
-fn resize_image(img: RgbaImage, max_dimension: u32) -> RgbaImage {
+fn resize_image(img: &RgbaImage, max_dimension: u32) -> RgbaImage {
     let (width, height) = (img.width(), img.height());
     let (new_width, new_height) = calculate_resized_dimensions(width, height, max_dimension);
 
     // Check if resizing is needed
     if new_width == width && new_height == height {
-        return img;
+        return img.clone();
     }
 
     println!(
@@ -49,12 +50,13 @@ fn resize_image(img: RgbaImage, max_dimension: u32) -> RgbaImage {
     );
 
     // Resize using Lanczos3 filter for good quality
-    image::imageops::resize(&img, new_width, new_height, FilterType::Lanczos3)
+    image::imageops::resize(img, new_width, new_height, FilterType::Lanczos3)
 }
 
 /// Screenshot result containing the base64 image and dimensions
 #[derive(Debug, Clone)]
 pub struct ScreenshotResult {
+    pub native_image: Arc<RgbaImage>,
     pub base64_image: String,
     pub image_width: u32,
     pub image_height: u32,
@@ -85,7 +87,12 @@ pub fn capture_screen_with_metadata(
         .ok_or_else(|| ScreenshotError::EncodeError("Failed to create RGBA image".to_string()))?;
 
     // Resize the image to reduce token usage
-    let resized = resize_image(rgba_image, max_dim);
+    if (rgba_image.width(), rgba_image.height()) != (actual_width, actual_height) {
+        return Err(ScreenshotError::CaptureError(
+            "Captured image and monitor geometry differ; capture again".into(),
+        ));
+    }
+    let resized = resize_image(&rgba_image, max_dim);
     let image_width = resized.width();
     let image_height = resized.height();
 
@@ -114,6 +121,7 @@ pub fn capture_screen_with_metadata(
     );
 
     Ok(ScreenshotResult {
+        native_image: Arc::new(rgba_image),
         base64_image,
         image_width,
         image_height,
@@ -129,6 +137,8 @@ pub fn capture_screen_with_metadata(
 #[derive(Debug, Clone)]
 pub struct ZoomCrop {
     pub base64_image: String,
+    pub image_width: u32,
+    pub image_height: u32,
     /// Crop origin as a fraction of the full capture, [0,1].
     pub origin_fx: f64,
     pub origin_fy: f64,
@@ -159,52 +169,10 @@ fn resize_to_max(img: RgbaImage, max_dimension: u32) -> RgbaImage {
     image::imageops::resize(&img, new_w, new_h, FilterType::Lanczos3)
 }
 
-/// Set a single pixel, ignoring out-of-bounds coordinates.
-fn put_px(img: &mut RgbaImage, x: i64, y: i64, color: [u8; 4]) {
-    if x >= 0 && y >= 0 && (x as u32) < img.width() && (y as u32) < img.height() {
-        img.put_pixel(x as u32, y as u32, image::Rgba(color));
-    }
-}
-
-/// Draw a center-gap crosshair centered at (cx, cy). `gap` leaves the exact
-/// target pixel uncovered; `len` is the arm length; `thick` adds pixels on each
-/// side of the 1px line (thick=1 -> 3px wide).
-fn draw_cross(
-    img: &mut RgbaImage,
-    cx: i64,
-    cy: i64,
-    gap: i64,
-    len: i64,
-    thick: i64,
-    color: [u8; 4],
-) {
-    for d in gap..=len {
-        for t in -thick..=thick {
-            put_px(img, cx + d, cy + t, color); // right arm
-            put_px(img, cx - d, cy + t, color); // left arm
-            put_px(img, cx + t, cy + d, color); // bottom arm
-            put_px(img, cx + t, cy - d, color); // top arm
-        }
-    }
-}
-
-/// Draw a magenta reticle (with a black halo for contrast on any background) at
-/// the coarse-prediction point, leaving the center clear so it anchors pass 2
-/// on the target without occluding it.
-fn draw_reticle(img: &mut RgbaImage, cx: i64, cy: i64) {
-    let gap = 7i64;
-    let len = 26i64;
-    draw_cross(img, cx, cy, gap, len, 2, [0, 0, 0, 255]); // 5px black halo
-    draw_cross(img, cx, cy, gap, len, 1, [255, 0, 255, 255]); // 3px magenta
-}
-
-/// Capture the screen and return a zoomed crop centered on a normalized point.
-/// `center_fx`/`center_fy` are in [0,1]; `crop_frac` is the crop size as a
-/// fraction of the full screen (e.g. 0.3 = a 30% window). The window is clamped
-/// (shifted, not shrunk) so edge targets stay fully framed, then upscaled to
-/// `max_dimension`. Cropping happens on the NATIVE capture, not a downsample,
-/// so the model gets real detail it never saw in the coarse pass.
-pub fn capture_zoom_crop(
+/// Magnify the original native capture around an approximate point. Never
+/// recapture mid-decision: both grounding passes must see the same observation.
+pub fn zoom_crop(
+    image: &RgbaImage,
     center_fx: f64,
     center_fy: f64,
     crop_frac: f64,
@@ -216,45 +184,27 @@ pub fn capture_zoom_crop(
         ));
     }
     let max_dimension = checked_dimension(max_dimension)?;
-    let screen = primary_monitor()?;
-    let image = screen
-        .capture_image()
-        .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
-
     let full_w = image.width();
     let full_h = image.height();
-    let rgba = RgbaImage::from_raw(full_w, full_h, image.into_raw())
-        .ok_or_else(|| ScreenshotError::EncodeError("Failed to create RGBA image".to_string()))?;
+    if full_w < 2 || full_h < 2 {
+        return Err(ScreenshotError::CaptureError(
+            "Invalid source image dimensions".into(),
+        ));
+    }
 
     let crop_frac = crop_frac.clamp(0.05, 1.0);
     let cw = (((full_w as f64) * crop_frac).round() as u32).clamp(1, full_w);
     let ch = (((full_h as f64) * crop_frac).round() as u32).clamp(1, full_h);
 
     // Center on the point, then shift the window so it stays within bounds.
-    let cx = (center_fx.clamp(0.0, 1.0) * full_w as f64).round() as i64;
-    let cy = (center_fy.clamp(0.0, 1.0) * full_h as f64).round() as i64;
+    let cx = (center_fx.clamp(0.0, 1.0) * (full_w - 1) as f64).round() as i64;
+    let cy = (center_fy.clamp(0.0, 1.0) * (full_h - 1) as f64).round() as i64;
     let x0 = (cx - cw as i64 / 2).clamp(0, (full_w - cw) as i64) as u32;
     let y0 = (cy - ch as i64 / 2).clamp(0, (full_h - ch) as i64) as u32;
 
-    let cropped = image::imageops::crop_imm(&rgba, x0, y0, cw, ch).to_image();
-    let mut zoomed = resize_to_max(cropped, max_dimension);
+    let cropped = image::imageops::crop_imm(image, x0, y0, cw, ch).to_image();
+    let zoomed = resize_to_max(cropped, max_dimension);
     let (zw, zh) = (zoomed.width(), zoomed.height());
-
-    // Draw a reticle at the coarse point so pass 2 has a visual anchor on the
-    // intended target — robust even when edge-clamping pushed the target away
-    // from the crop center.
-    let lx = ((cx - x0 as i64) as f64 / cw as f64).clamp(0.0, 1.0);
-    let ly = ((cy - y0 as i64) as f64 / ch as f64).clamp(0.0, 1.0);
-    draw_reticle(
-        &mut zoomed,
-        (lx * zw as f64).round() as i64,
-        (ly * zh as f64).round() as i64,
-    );
-
-    println!(
-        "Zoom crop: center ({:.3},{:.3}) frac {:.2} -> native {}x{} at ({},{}) of {}x{}, upscaled to {}x{}",
-        center_fx, center_fy, crop_frac, cw, ch, x0, y0, full_w, full_h, zw, zh
-    );
 
     let mut buffer = Vec::new();
     PngEncoder::new(&mut buffer)
@@ -264,10 +214,12 @@ pub fn capture_zoom_crop(
 
     Ok(ZoomCrop {
         base64_image,
-        origin_fx: x0 as f64 / full_w as f64,
-        origin_fy: y0 as f64 / full_h as f64,
-        frac_w: cw as f64 / full_w as f64,
-        frac_h: ch as f64 / full_h as f64,
+        image_width: zw,
+        image_height: zh,
+        origin_fx: x0 as f64 / (full_w - 1) as f64,
+        origin_fy: y0 as f64 / (full_h - 1) as f64,
+        frac_w: (cw - 1) as f64 / (full_w - 1) as f64,
+        frac_h: (ch - 1) as f64 / (full_h - 1) as f64,
     })
 }
 
@@ -321,6 +273,32 @@ fn checked_dimension(value: u32) -> Result<u32, ScreenshotError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn crop_maps_edges_back_to_physical_pixels_without_changing_the_frame() {
+        let original = RgbaImage::from_pixel(1920, 1080, image::Rgba([20, 80, 140, 255]));
+        for (x, y) in [(0.0, 0.0), (1.0, 1.0), (0.146, 0.9)] {
+            let crop = zoom_crop(&original, x, y, 0.3, 1280).unwrap();
+            let decoded = image::load_from_memory(&STANDARD.decode(&crop.base64_image).unwrap())
+                .unwrap()
+                .into_rgba8();
+            assert_eq!(decoded.get_pixel(0, 0), original.get_pixel(0, 0));
+            assert_eq!(
+                decoded.get_pixel(decoded.width() / 2, decoded.height() / 2),
+                original.get_pixel(0, 0)
+            ); // No reticle alters the evidence.
+            assert_eq!((decoded.width(), decoded.height()), (1280, 720));
+            let start_x = (crop.origin_fx * 1919.0).round();
+            let end_x = ((crop.origin_fx + crop.frac_w) * 1919.0).round();
+            let start_y = (crop.origin_fy * 1079.0).round();
+            let end_y = ((crop.origin_fy + crop.frac_h) * 1079.0).round();
+            assert_eq!(end_x - start_x, 575.0);
+            assert_eq!(end_y - start_y, 323.0);
+            assert!(start_x >= 0.0 && end_x <= 1919.0 && start_y >= 0.0 && end_y <= 1079.0);
+            if x == 1.0 {
+                assert_eq!((end_x, end_y), (1919.0, 1079.0));
+            }
+        }
+    }
     #[test]
     #[ignore = "Requires an interactive Windows desktop; captures only, never sends input"]
     fn capture_primary_monitor_smoke() {

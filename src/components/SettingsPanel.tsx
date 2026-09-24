@@ -284,7 +284,7 @@ export function SettingsPanel({
             </button>
           </div>
 
-          {/* Auto-approve confirmations */}
+          {/* Task planning */}
           <div className="flex items-center justify-between">
             <div>
               <label className="block text-sm font-medium text-dark-300">
@@ -358,10 +358,10 @@ export function SettingsPanel({
           <div className="flex items-center justify-between">
             <div className="pr-4">
               <label className="block text-sm font-medium text-dark-300">
-                Zoom Refine (two-pass)
+                Precision Clicks
               </label>
               <p className="text-xs text-dark-500">
-                After the first prediction, re-capture a magnified crop around it and click again for sub-patch precision. Adds one API call per click.
+                Check the intended target in a magnified view of the same screenshot before clicking. Adds one model request; only one click is sent.
               </p>
             </div>
             <button

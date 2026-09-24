@@ -54,7 +54,13 @@ async fn capture_screenshot_with_metadata(
     if token.is_cancelled() {
         return Err("Run stopped".into());
     }
-    let observation_id = state.observe(&run_id, result.geometry, foreground, windows)?;
+    let observation_id = state.observe(
+        &run_id,
+        result.geometry,
+        result.native_image,
+        foreground,
+        windows,
+    )?;
     Ok(ScreenshotWithMetadata {
         base64_image: result.base64_image,
         image_width: result.image_width,
@@ -102,6 +108,7 @@ async fn process_computer_use(
 #[allow(clippy::too_many_arguments)]
 async fn refine_coordinate(
     run_id: String,
+    observation_id: String,
     api_endpoint: String,
     model_id: String,
     coarse_x: f64,
@@ -115,7 +122,9 @@ async fn refine_coordinate(
     state: Control<'_>,
 ) -> Result<api::RefineResult, String> {
     let token = state.token(&run_id)?;
+    let observation = state.observation(&run_id, &observation_id)?;
     api::refine_coordinate(
+        &observation.native_image,
         &api_endpoint,
         &model_id,
         coarse_x,
@@ -191,8 +200,13 @@ fn prepare_action(
 }
 
 #[tauri::command]
-fn approve_action(run_id: String, proposal_id: String, state: Control<'_>) -> Result<(), String> {
-    state.approve(&run_id, &proposal_id)
+fn approve_action(
+    run_id: String,
+    proposal_id: String,
+    allow_for_task: Option<bool>,
+    state: Control<'_>,
+) -> Result<(), String> {
+    state.approve(&run_id, &proposal_id, allow_for_task.unwrap_or(false))
 }
 
 #[tauri::command]
