@@ -1,4 +1,5 @@
 import { buildSystemPrompt } from '../agent/protocol';
+import { errorMessage, isScreenChanged } from '../agent/controlError';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -351,10 +352,24 @@ export function useAgent() {
         if (allowed === 'task') setIsDirectControl(true);
       }
       assertRunning();
-      await invoke('execute_action', {
-        runId: id,
-        proposalId: proposal.id,
-      });
+      try {
+        await invoke('execute_action', {
+          runId: id,
+          proposalId: proposal.id,
+        });
+      } catch (err) {
+        if (isScreenChanged(err) && err.input_may_have_been_sent) {
+          // A double click, drag, or typing sequence may have partly executed.
+          // Force outcome review on the next observation before more input.
+          memory.current.submitted(executable, {
+            ...context,
+            expected:
+              'Input was interrupted; verify the actual effect before repeating. ' +
+              context.expected,
+          });
+        }
+        throw err;
+      }
       memory.current.submitted(executable, context);
       assertRunning();
       publishTask();
@@ -381,7 +396,7 @@ export function useAgent() {
         // Preview is read-only; it cannot update the task or retain an input capability.
         return response;
       } catch (err) {
-        const text = stopped.current ? 'Run stopped' : String(err);
+        const text = stopped.current ? 'Run stopped' : errorMessage(err);
         if (!stopped.current) setError(text);
         message('system', text);
         await finishRun();
@@ -421,6 +436,8 @@ export function useAgent() {
         repair = 0,
         verifying = false,
         completionRepair = 0,
+        screenRetries = 0,
+        totalScreenRetries = 0,
         replans = 0,
         requireReplan = false;
       let next = resume
@@ -577,13 +594,51 @@ export function useAgent() {
           try {
             await performAction(action);
           } catch (err) {
+            assertRunning();
+            if (isScreenChanged(err)) {
+              const outcome = err.input_may_have_been_sent
+                ? 'Some input may have been sent. Inspect the new screen and report progress.outcome before any further input. Do not blindly repeat the previous action.'
+                : 'The proposed action was NOT executed. Do not report an outcome for that rejected proposal.';
+              const reason = errorMessage(err) + ' ' + outcome;
+              memory.current.interrupted(reason);
+              memory.current.record('Controller execution result', reason);
+              publishTask();
+              if (screenRetries >= 3 || totalScreenRetries >= 6)
+                throw new Error(
+                  'The screen kept changing after automatic recovery attempts. Task paused. Last reason: ' +
+                    errorMessage(err),
+                );
+              screenRetries++;
+              totalScreenRetries++;
+              message(
+                'system',
+                `The screen changed. Taking a fresh screenshot and retrying (${screenRetries}/3).`,
+              );
+              next =
+                'Recover from a screen/window transition while continuing the original goal. ' +
+                reason +
+                ' Use this NEW screenshot to choose the next action. If Task View, a window switcher, or another overlay is open, select the intended application or dismiss the overlay when appropriate, then continue. Retry the intended icon only if the fresh screen shows it is still needed.';
+              // A rejected proposal is not an executed no-progress loop.
+              previous = '';
+              repeat = 0;
+              verifying = false;
+              completionRepair = 0;
+              for (let waited = 0; waited < 500; waited += 100) {
+                assertRunning();
+                await delay(100);
+              }
+              assertRunning();
+              turn++;
+              continue;
+            }
             if (!stopped.current)
               memory.current.blocked(
-                'Input outcome not confirmed: ' + String(err),
+                'Input outcome not confirmed: ' + errorMessage(err),
                 action.progress?.next_milestone_id,
               );
             throw err;
           }
+          screenRetries = 0;
           completionRepair = 0;
           next =
             'Check whether the previous input achieved its intended result. Continue the next unfinished milestone with one action. If stuck, change approach or ask for help.';
@@ -614,7 +669,7 @@ export function useAgent() {
             : 'needs_user';
         const text = stopped.current
           ? 'Execution stopped by user or emergency/time limit.'
-          : String(err);
+          : errorMessage(err);
         if (!stopped.current) setError(text);
         message('system', text);
       } finally {

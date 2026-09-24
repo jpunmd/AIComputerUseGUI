@@ -1,4 +1,5 @@
 //! Guards target identity and prevents the model interacting with its controller.
+use crate::control_error::ControlError;
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowTarget {
     pub handle: usize,
@@ -8,16 +9,18 @@ pub struct WindowTarget {
 
 #[cfg(windows)]
 mod platform {
-    use super::WindowTarget;
+    use super::{ControlError, WindowTarget};
     use windows_sys::Win32::{
         Foundation::{HWND, POINT, RECT},
         UI::WindowsAndMessaging::*,
     };
-    fn inspect(window: HWND) -> Result<WindowTarget, String> {
+    fn inspect(window: HWND) -> Result<WindowTarget, ControlError> {
         unsafe {
             let root = GetAncestor(window, GA_ROOT);
             if root.is_null() || IsWindow(root) == 0 {
-                return Err("Target window no longer exists".into());
+                return Err(ControlError::screen_changed(
+                    "Target window no longer exists",
+                ));
             }
             let mut process = 0;
             GetWindowThreadProcessId(root, &mut process);
@@ -57,25 +60,31 @@ mod platform {
         }
         windows
     }
-    pub fn at_point(x: i32, y: i32) -> Result<WindowTarget, String> {
+    pub fn at_point(x: i32, y: i32) -> Result<WindowTarget, ControlError> {
         unsafe { inspect(WindowFromPoint(POINT { x, y })) }
     }
-    pub fn verify(target: &WindowTarget, focus: bool) -> Result<(), String> {
+    pub fn verify(target: &WindowTarget, focus: bool) -> Result<(), ControlError> {
         unsafe {
             if inspect(target.handle as HWND)? != *target {
-                return Err("Target window moved or changed; capture again".into());
+                return Err(ControlError::screen_changed(
+                    "Target window moved or changed; capture again",
+                ));
             }
             if focus {
                 // The approval UI can take focus. An unrelated external app taking it cannot.
                 if let Some(current) = foreground() {
                     if current.handle != target.handle {
-                        return Err("Another application took focus; capture again".into());
+                        return Err(ControlError::screen_changed(
+                            "Another application took focus; capture again",
+                        ));
                     }
                 }
                 if SetForegroundWindow(target.handle as HWND) == 0
                     || GetForegroundWindow() != target.handle as HWND
                 {
-                    return Err("Cannot restore the approved target window".into());
+                    return Err(ControlError::screen_changed(
+                        "Cannot restore the approved target window",
+                    ));
                 }
             }
             Ok(())
@@ -94,17 +103,17 @@ mod platform {
 }
 #[cfg(not(windows))]
 mod platform {
-    use super::WindowTarget;
+    use super::{ControlError, WindowTarget};
     pub fn foreground() -> Option<WindowTarget> {
         None
     }
     pub fn snapshot() -> Vec<WindowTarget> {
         Vec::new()
     }
-    pub fn at_point(_: i32, _: i32) -> Result<WindowTarget, String> {
+    pub fn at_point(_: i32, _: i32) -> Result<WindowTarget, ControlError> {
         Err("Protected computer control currently requires Windows".into())
     }
-    pub fn verify(_: &WindowTarget, _: bool) -> Result<(), String> {
+    pub fn verify(_: &WindowTarget, _: bool) -> Result<(), ControlError> {
         Err("Protected computer control currently requires Windows".into())
     }
     pub fn emergency_pressed() -> bool {
@@ -113,11 +122,16 @@ mod platform {
 }
 pub use platform::*;
 
-pub fn require_captured(windows: &[WindowTarget], target: &WindowTarget) -> Result<(), String> {
+pub fn require_captured(
+    windows: &[WindowTarget],
+    target: &WindowTarget,
+) -> Result<(), ControlError> {
     if windows.contains(target) {
         Ok(())
     } else {
-        Err("Target window changed since the screenshot; capture again".into())
+        Err(ControlError::screen_changed(
+            "Target window changed since the screenshot; capture again",
+        ))
     }
 }
 
@@ -149,6 +163,8 @@ mod tests {
             }
         )
         .is_err());
-        assert!(require_captured(&[], &target).is_err());
+        let rejection = require_captured(&[], &target).unwrap_err();
+        assert_eq!(rejection.code, "screen_changed");
+        assert!(!rejection.input_may_have_been_sent);
     }
 }

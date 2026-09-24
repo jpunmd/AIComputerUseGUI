@@ -491,6 +491,21 @@ export class TaskMemory {
     t.summary = summary(t);
   }
 
+  interrupted(reason: string) {
+    if (!this.task) return;
+    this.addNote(this.task, {
+      kind: 'failure',
+      text: reason.slice(0, 400),
+      evidence: {
+        text: reason.slice(0, 500),
+        step: this.task.lastStep,
+        observationId: this.currentObservation || '',
+        source: 'controller',
+      },
+    });
+    this.task.summary = summary(this.task);
+  }
+
   blocked(reason: string, milestoneId?: string) {
     if (!this.task) return;
     const t = this.task;

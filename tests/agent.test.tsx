@@ -26,6 +26,11 @@ const reply = (
 let responses: AgentResponse[] = [];
 let supervised = true;
 let observationNumber = 0;
+const screenChanged = (partial = false) => ({
+  code: 'screen_changed',
+  message: 'Target window changed since the screenshot; capture again',
+  input_may_have_been_sent: partial,
+});
 
 beforeEach(() => {
   responses = [];
@@ -71,6 +76,297 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('agent controller safety', () => {
+  it('recovers from a window switch with fresh targeting and retains task permission and milestones', async () => {
+    responses = [
+      reply('plan', { text: 'Open Chrome' }),
+      reply('click', { coordinate: [153, 977] }),
+      reply(
+        'click',
+        { coordinate: [150, 980] },
+        {
+          outcome: {
+            status: 'failed',
+            evidence: 'Task View opened instead of Chrome',
+          },
+        },
+      ),
+      reply('click', { coordinate: [600, 400] }),
+      reply(
+        'done',
+        { text: 'Chrome is open' },
+        {
+          outcome: { status: 'succeeded', evidence: 'Chrome window visible' },
+          milestones: [
+            {
+              id: 'm1-1',
+              status: 'completed',
+              evidence: 'Chrome window visible',
+            },
+          ],
+        },
+      ),
+      reply('done', { text: 'Chrome remains open' }),
+    ];
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'prepare_action' && observationNumber === 3
+        ? Promise.reject(screenChanged())
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Open Chrome', {
+        ...settings,
+        enablePlanning: true,
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation?.onAllowTask).toBeDefined(),
+    );
+    await act(async () => {
+      result.current.pendingConfirmation!.onAllowTask!();
+      await task;
+    });
+    expect(result.current.task?.status).toBe('completed');
+    expect(result.current.error).toBeNull();
+    expect(result.current.task?.plan[0].attempts).toBe(2);
+    expect(result.current.task?.receipts.map((r) => r.outcome)).toEqual([
+      'failed',
+      'succeeded',
+    ]);
+    expect(
+      result.current.task?.notes.some(
+        (n) =>
+          n.evidence.source === 'controller' && n.text.includes('NOT executed'),
+      ),
+    ).toBe(true);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'approve_action'),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(2);
+    const proposals = mocks.invoke.mock.calls
+      .filter((c) => c[0] === 'prepare_action')
+      .map((c) => c[1]);
+    expect(proposals.map((p) => p.observationId)).toEqual([
+      'obs-2',
+      'obs-3',
+      'obs-4',
+    ]);
+    expect(JSON.parse(proposals[2].action).arguments.coordinate).toEqual([
+      600, 400,
+    ]);
+    const recoveryPrompt = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    )[3][1].query;
+    expect(recoveryPrompt).toContain('NOT executed');
+    expect(recoveryPrompt).toContain('Task View');
+    expect(recoveryPrompt).toContain('Open Chrome');
+  });
+
+  it('requires outcome review before more input after a possibly partial action', async () => {
+    responses = [
+      reply('double_click', { coordinate: [200, 300] }),
+      reply('key', { key: 'enter' }), // Missing outcome must not execute.
+      reply(
+        'done',
+        { text: 'File opened on the first click' },
+        {
+          outcome: {
+            status: 'succeeded',
+            evidence: 'File visible on new screen',
+          },
+        },
+      ),
+      reply('done', { text: 'File remains open' }),
+    ];
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'execute_action'
+        ? Promise.reject(screenChanged(true))
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask('Open file', settings, false);
+    });
+    expect(result.current.task?.status).toBe('completed');
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'prepare_action'),
+    ).toHaveLength(1);
+    expect(result.current.task?.receipts[0].expected).toContain(
+      'Input was interrupted',
+    );
+    expect(result.current.task?.receipts[0].outcome).toBe('succeeded');
+    const prompt = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    )[1][1].query;
+    expect(prompt).toContain('Some input may have been sent');
+    expect(prompt).toContain('Do not blindly repeat');
+  });
+
+  it('bounds repeated window-change recovery without executing stale proposals', async () => {
+    responses = Array.from({ length: 4 }, () =>
+      reply('click', { coordinate: [100, 900] }),
+    );
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'prepare_action'
+        ? Promise.reject(screenChanged())
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask('Open Chrome', settings, false);
+    });
+    expect(result.current.task?.status).toBe('needs_user');
+    expect(result.current.error).toContain('after automatic recovery attempts');
+    expect(observationNumber).toBe(4);
+    expect(result.current.task?.receipts).toHaveLength(0);
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'execute_action')).toBe(
+      false,
+    );
+  });
+
+  it('Stop during recovery prevents another capture or input', async () => {
+    responses = [reply('click', { coordinate: [100, 900] })];
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'prepare_action'
+        ? Promise.reject(screenChanged())
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Open Chrome', settings, false);
+    });
+    await waitFor(() =>
+      expect(
+        result.current.messages.some((m) =>
+          m.content.includes('Taking a fresh screenshot'),
+        ),
+      ).toBe(true),
+    );
+    await act(async () => {
+      result.current.stopTask();
+      await task;
+    });
+    expect(result.current.task?.status).toBe('stopped');
+    expect(observationNumber).toBe(1);
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'execute_action')).toBe(
+      false,
+    );
+  });
+
+  it('resets consecutive retries after input but still bounds total recovery for the run', async () => {
+    responses = Array.from({ length: 13 }, (_, i) =>
+      reply(
+        'click',
+        { coordinate: [100 + i, 900] },
+        i > 0 && i % 2 === 0
+          ? {
+              outcome: {
+                status: 'succeeded',
+                evidence: 'Previous input reached its target',
+              },
+            }
+          : undefined,
+      ),
+    );
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'prepare_action' && observationNumber % 2 === 1
+        ? Promise.reject(screenChanged())
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Open Chrome',
+        { ...settings, maxTurns: 30 },
+        false,
+      );
+    });
+    expect(result.current.task?.status).toBe('needs_user');
+    expect(result.current.error).toContain('after automatic recovery attempts');
+    expect(observationNumber).toBe(13);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(6);
+  });
+
+  it('does not reuse Allow once for a newly targeted action after recovery', async () => {
+    responses = [
+      reply('click', { coordinate: [100, 900] }),
+      reply('click', { coordinate: [600, 400] }),
+    ];
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'execute_action'
+        ? Promise.reject(screenChanged())
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Open Chrome', settings);
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation).not.toBeNull(),
+    );
+    act(() => {
+      result.current.pendingConfirmation!.onConfirm();
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation?.message).toContain('600, 400'),
+    );
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'approve_action'),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+    await act(async () => {
+      result.current.pendingConfirmation!.onDeny();
+      await task;
+    });
+    expect(result.current.task?.status).toBe('needs_user');
+    expect(result.current.error).toContain('denied by user');
+  });
+
+  it.each([
+    'Target window changed since the screenshot; capture again',
+    {
+      code: 'action_rejected',
+      message: 'The agent cannot control its own window',
+      input_may_have_been_sent: false,
+    },
+  ])(
+    'does not retry unclassified or forbidden native errors: %j',
+    async (failure) => {
+      responses = [reply('click', { coordinate: [100, 900] })];
+      const original = mocks.invoke.getMockImplementation()!;
+      mocks.invoke.mockImplementation((cmd, args) =>
+        cmd === 'prepare_action'
+          ? Promise.reject(failure)
+          : original(cmd, args),
+      );
+      const { result } = renderHook(() => useAgent());
+      await act(async () => {
+        await result.current.runTask('Open Chrome', settings, false);
+      });
+      expect(result.current.task?.status).toBe('needs_user');
+      expect(observationNumber).toBe(1);
+      expect(result.current.error).not.toContain('[object Object]');
+    },
+  );
+
   it('allows the rest of a task from one prompt, but new runs still require approval', async () => {
     const observed = {
       status: 'succeeded' as const,
@@ -633,7 +929,9 @@ describe('agent controller safety', () => {
       await result.current.previewAction('Preview the browser icon', settings);
     });
     expect(result.current.task).toEqual(checkpoint);
-    expect(result.current.messages.at(-1)?.content).toContain('Preview only — no input executed.');
+    expect(result.current.messages.at(-1)?.content).toContain(
+      'Preview only — no input executed.',
+    );
     expect(mocks.invoke.mock.calls.some((c) => c[0] === 'prepare_action')).toBe(
       false,
     );

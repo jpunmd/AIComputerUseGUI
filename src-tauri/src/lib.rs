@@ -1,5 +1,6 @@
 mod actions;
 mod api;
+mod control_error;
 mod protocol;
 mod run_control;
 mod screenshot;
@@ -8,6 +9,7 @@ mod validation;
 mod window_guard;
 
 use crate::{
+    control_error::ControlError,
     run_control::{Proposal, RunControl},
     types::{ActionResult, AgentResponse},
 };
@@ -148,7 +150,7 @@ fn prepare_action(
     observation_id: String,
     action: String,
     state: Control<'_>,
-) -> Result<Proposal, String> {
+) -> Result<Proposal, ControlError> {
     if action.len() > 32768 {
         return Err("Action payload is too large".into());
     }
@@ -161,7 +163,9 @@ fn prepare_action(
     actions::validate_keys(&action).map_err(|e| e.to_string())?;
     let observation = state.observation(&run_id, &observation_id)?;
     if screenshot::get_screen_geometry().map_err(|e| e.to_string())? != observation.geometry {
-        return Err("Display changed; capture again".into());
+        return Err(ControlError::screen_changed(
+            "Display changed; capture again",
+        ));
     }
     let target = if let Some(p) = action
         .arguments
@@ -196,7 +200,9 @@ fn prepare_action(
     if let Some(target) = &target {
         window_guard::require_captured(&observation.windows, target)?;
     }
-    state.prepare(&run_id, action, observation, target)
+    state
+        .prepare(&run_id, action, observation, target)
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -214,7 +220,7 @@ async fn execute_action(
     run_id: String,
     proposal_id: String,
     state: Control<'_>,
-) -> Result<(), String> {
+) -> Result<(), ControlError> {
     let control = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _serial = control
@@ -225,7 +231,9 @@ async fn execute_action(
         if screenshot::get_screen_geometry().map_err(|e| e.to_string())?
             != proposal.observation.geometry
         {
-            return Err("Display changed; capture again".into());
+            return Err(ControlError::screen_changed(
+                "Display changed; capture again",
+            ));
         }
         actions::execute_action(
             &proposal.action,
@@ -233,7 +241,10 @@ async fn execute_action(
             proposal.target.as_ref(),
             &token,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| match e {
+            actions::ActionError::TargetChanged(error) => error.after_input_attempt(),
+            other => ControlError::from(other.to_string()),
+        })
     })
     .await
     .map_err(|e| e.to_string())?
