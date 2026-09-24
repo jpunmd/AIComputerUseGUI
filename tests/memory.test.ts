@@ -154,7 +154,7 @@ describe('task progress and durable memory', () => {
       memory.applyProgress({
         milestones: [{ id, status: 'completed', evidence: 'Editor visible' }],
       }),
-    ).toThrow('review the last input');
+    ).toThrow('include progress.outcome');
     memory.applyProgress({
       outcome: observed,
       milestones: [

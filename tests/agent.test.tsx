@@ -67,13 +67,87 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('agent controller safety', () => {
+  it('repairs a rejected wire response with its exact error and output before preparing input', async () => {
+    const rejected =
+      '<tool_call>{"name":"computer","arguments":{"action":"key","keys":["enter"]}}</tool_call>';
+    responses = [
+      {
+        ...reply('none'),
+        success: false,
+        output_text: rejected,
+        error:
+          'Failed to parse response: Invalid computer tool call: unknown field `keys`, expected `key`',
+      },
+      reply('key', { key: 'enter' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runMultiTurn('Open the selected item', {
+        ...settings,
+        maxTurns: 2,
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.pendingConfirmation).not.toBeNull(),
+    );
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'prepare_action'),
+    ).toHaveLength(1);
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'execute_action')).toBe(
+      false,
+    );
+    const requests = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    );
+    expect(requests[1][1].query).toContain('unknown field `keys`');
+    expect(requests[1][1].priorTurns[0].assistant_content).toContain(rejected);
+    expect(
+      result.current.messages.find((m) => m.modelResponse)?.modelResponse,
+    ).toBe(rejected);
+    await act(async () => {
+      result.current.pendingConfirmation!.onConfirm();
+      await task;
+    });
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+  });
+
+  it('pauses after one unsuccessful format repair without executing or discarding the diagnostics', async () => {
+    const invalid = {
+      ...reply('none'),
+      success: false,
+      output_text: '{"bad":"response"}',
+      error: 'Failed to parse response: missing field action',
+    };
+    responses = [invalid, invalid];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runMultiTurn('Open browser', settings);
+    });
+    expect(result.current.task?.status).toBe('needs_user');
+    expect(result.current.messages.filter((m) => m.modelResponse)).toHaveLength(
+      2,
+    );
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'process_computer_use'),
+    ).toHaveLength(2);
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'prepare_action')).toBe(
+      false,
+    );
+  });
+
   it('tracks two milestones through observed outcomes and keeps metadata out of native input', async () => {
     responses = [
       reply('plan', {
         text: JSON.stringify({
           steps: [
             { title: 'Open report', success_criteria: 'Report visible' },
-            { title: 'Save report', success_criteria: 'Saved label visible' },
+            {
+              title: 'Save report',
+              success_criteria: 'Saved label visible',
+            },
           ],
         }),
       }),
@@ -102,7 +176,10 @@ describe('agent controller safety', () => {
         'done',
         { text: 'Report saved' },
         {
-          outcome: { status: 'succeeded', evidence: 'Saved indicator visible' },
+          outcome: {
+            status: 'succeeded',
+            evidence: 'Saved indicator visible',
+          },
           milestones: [
             {
               id: 'm1-2',
@@ -206,7 +283,10 @@ describe('agent controller safety', () => {
 
   it('replans once after repeated input and retains the failed approach in memory', async () => {
     const unchanged = {
-      outcome: { status: 'uncertain' as const, evidence: 'Screen unchanged' },
+      outcome: {
+        status: 'uncertain' as const,
+        evidence: 'Screen unchanged',
+      },
     };
     responses = [
       reply('plan', { text: 'Open report' }),
@@ -230,7 +310,10 @@ describe('agent controller safety', () => {
         'done',
         { text: 'Report visible' },
         {
-          outcome: { status: 'succeeded', evidence: 'Report text visible' },
+          outcome: {
+            status: 'succeeded',
+            evidence: 'Report text visible',
+          },
           milestones: [
             {
               id: 'm1-1',
@@ -295,7 +378,11 @@ describe('agent controller safety', () => {
           { text: 'Done' },
           {
             milestones: [
-              { id: 'm1-1', status: 'completed', evidence: 'Late evidence' },
+              {
+                id: 'm1-1',
+                status: 'completed',
+                evidence: 'Late evidence',
+              },
             ],
           },
         ),
@@ -364,7 +451,12 @@ describe('agent controller safety', () => {
       reply(
         'done',
         { text: 'Saved label visible' },
-        { outcome: { status: 'succeeded', evidence: 'Saved label visible' } },
+        {
+          outcome: {
+            status: 'succeeded',
+            evidence: 'Saved label visible',
+          },
+        },
       ),
       reply('done', { text: 'Saved label still visible' }),
     ];
@@ -425,7 +517,12 @@ describe('agent controller safety', () => {
         'key',
         { key: 'enter' },
         i
-          ? { outcome: { status: 'uncertain', evidence: 'Screen unchanged' } }
+          ? {
+              outcome: {
+                status: 'uncertain',
+                evidence: 'Screen unchanged',
+              },
+            }
           : undefined,
       ),
     );

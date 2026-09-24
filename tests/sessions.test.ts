@@ -23,6 +23,23 @@ const session = {
   ],
 };
 describe('saved sessions', () => {
+  it('preserves bounded rejected output as diagnostic text without action permissions', () => {
+    const saved = {
+      ...session,
+      messages: [
+        {
+          ...session.messages[0],
+          modelResponse: '<tool_call>invalid</tool_call>',
+          approved: true,
+        },
+      ],
+    };
+    const restored = validateSession(saved).messages[0];
+    expect(restored.modelResponse).toBe('<tool_call>invalid</tool_call>');
+    expect(restored).not.toHaveProperty('approved');
+    saved.messages[0].modelResponse = 'x'.repeat(33001);
+    expect(() => validateSession(saved)).toThrow();
+  });
   it('round-trips versioned progress, facts and receipts while discarding unknown authorization', () => {
     const memory = new TaskMemory();
     memory.start('Open report', true);
@@ -39,7 +56,10 @@ describe('saved sessions', () => {
     const saved = {
       ...session,
       messages: [
-        { ...session.messages[0], task: { ...memory.task!, approved: true } },
+        {
+          ...session.messages[0],
+          task: { ...memory.task!, approved: true },
+        },
       ],
     };
     const restored = validateSession(saved).messages[0].task!;

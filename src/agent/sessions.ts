@@ -84,6 +84,8 @@ function message(value: unknown): SerializedMessage {
   if (data.task !== undefined) result.task = restoreTask(data.task);
   if (data.action !== undefined) result.action = action(data.action);
   if (data.thinking !== undefined) result.thinking = text(data.thinking);
+  if (data.modelResponse !== undefined)
+    result.modelResponse = text(data.modelResponse, 33000);
   for (const key of ['screenshot', 'zoomCrop'] as const) {
     if (data[key] !== undefined) {
       const image = text(data[key], 24 * 1024 * 1024);

@@ -2,6 +2,8 @@
 
 Planning uses the same local vision model as execution. No additional model or separate summarization request is needed: a normal action response can describe the current screen and record durable facts alongside its proposed next input. This adds structured output requirements; models that cannot follow them receive one repair attempt and then the run pauses.
 
+The controller supplies the current tool schema on every request, including when saved settings contain an older tool definition. An unverified input adds an explicit reminder to report `progress.outcome`. A rejected wire response keeps its specific schema error and a bounded final-output excerpt for one repair attempt. The excerpt appears under **View rejected model response** and is included in session exports as diagnostic text; it is never an executable action. Reasoning is not included in that excerpt.
+
 ## Milestones and revisions
 
 The initial `plan` action's `text` contains JSON such as:
@@ -52,4 +54,4 @@ Milestone updates require an existing `id`, a status of `in_progress`, `complete
 
 Version 2 checkpoints preserve milestone IDs, evidence, notes, receipts, counters, and revision reasons. Restoring always stops the task and requires a fresh screen. Old string plans migrate to pending milestones; a legacy input summary becomes unverified history to recheck. No run token or approval is restored. Unknown future checkpoint versions are rejected rather than guessed.
 
-The panel labels model observations separately from controller errors. Evidence remains model judgment, and saved/imported evidence is historical, not trusted proof. Final completion still requires the model to recheck the full original task against a fresh screen. Real-model grounding, independent application-state verification, and model-specific token budgets require further evaluation/work.
+The panel labels model observations separately from controller errors. Evidence remains model judgment, and saved/imported evidence is historical, not trusted proof. Final completion still requires the model to recheck the full original task against a fresh screen. Protocol responses have been checked against a local Qwen model using simulated screen descriptions, with recorded fixtures tested by both the Rust parser and task memory. Real-model visual grounding, independent application-state verification, and model-specific token budgets require further evaluation/work.

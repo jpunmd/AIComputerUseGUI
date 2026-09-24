@@ -47,6 +47,7 @@ export interface AgentResponse {
 }
 
 export interface Message {
+  modelResponse?: string; // Rejected model output for diagnosis only; never an action.
   task?: TaskRecord;
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -64,6 +65,7 @@ export interface Message {
 
 // Serializable version of Message for storage (Date as ISO string)
 export interface SerializedMessage {
+  modelResponse?: string;
   task?: TaskRecord;
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -164,8 +166,16 @@ export interface TaskProgress {
     status: Exclude<MilestoneStatus, 'pending'>;
     evidence: string;
   }[];
-  outcome?: { status: 'succeeded' | 'failed' | 'uncertain'; evidence: string };
-  notes?: { id?: string; kind: NoteKind; text: string; evidence?: string }[];
+  outcome?: {
+    status: 'succeeded' | 'failed' | 'uncertain';
+    evidence: string;
+  };
+  notes?: {
+    id?: string;
+    kind: NoteKind;
+    text: string;
+    evidence?: string;
+  }[];
   resolve_questions?: { id: string; answer: string; evidence: string }[];
   next_milestone_id?: string;
   expected_outcome?: string;

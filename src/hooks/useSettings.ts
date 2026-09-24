@@ -1,3 +1,4 @@
+import { TOOL_DEFINITION } from '../agent/protocol';
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
 
@@ -5,10 +6,8 @@ export const DEFAULT_SYSTEM_PROMPT = `You are a desktop control agent. Your sole
 
 Your front end is a GUI application called "AI Computer Use Agent" — this is the chat window the user types into and watches your actions through. Do NOT click, type into, or otherwise interact with this window. If you see it on screen, treat it as off-limits and work around it (switch to the target window, minimize the agent window if needed, etc.). The agent window typically shows a chat history, a command input box, screenshots, and a Settings/gear icon — never click these.
 
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm", "plan"], "type": "string"}, "coordinate": {"description": "The x,y coordinate in 0-1000 normalized space. (0,0) is top-left, (1000,1000) is bottom-right.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
-</tools>
+Current computer tool definition:
+${TOOL_DEFINITION}
 
 # Coordinate System
 - Use NORMALIZED coordinates from 0 to 1000

@@ -148,6 +148,9 @@ export class TaskMemory {
           '. Preserve summary facts and ask if a required detail is missing.'
         : '',
       'Current request:\n' + query,
+      last?.outcome === 'unverified'
+        ? 'Required response field: arguments.progress.outcome = {"status":"succeeded|failed|uncertain","evidence":"what THIS screen shows about the previous input"}. Choose exactly one status. Include this before proposing more input or completing the affected milestone. A milestone update alone does not review the input. If the result is unclear, use uncertain.'
+        : '',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -375,7 +378,7 @@ export class TaskMemory {
         last.outcome !== 'succeeded'
       ) {
         throw new TaskUpdateError(
-          'review the last input outcome before completing its milestone',
+          'include progress.outcome with observed evidence for the last input before completing its milestone; completion requires a succeeded outcome',
         );
       }
       milestone.status = update.status;
@@ -504,7 +507,11 @@ export class TaskMemory {
       milestone.status = 'blocked';
       milestone.evidence = evidence;
     }
-    this.addNote(t, { kind: 'failure', text: reason.slice(0, 400), evidence });
+    this.addNote(t, {
+      kind: 'failure',
+      text: reason.slice(0, 400),
+      evidence,
+    });
     t.summary = summary(t);
   }
 
@@ -580,7 +587,10 @@ export function actionSignature(
     hash = Math.imul(hash ^ screenshot.charCodeAt(i), 16777619);
   // Varying model commentary must not bypass the repetition detector.
   return (
-    JSON.stringify({ action: action.action, arguments: action.arguments }) +
+    JSON.stringify({
+      action: action.action,
+      arguments: action.arguments,
+    }) +
     ':' +
     (hash >>> 0)
   );

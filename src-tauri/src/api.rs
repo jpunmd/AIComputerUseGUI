@@ -231,9 +231,10 @@ pub async fn call_computer_use_api(
         .choices
         .first()
         .ok_or_else(|| ApiError::ParseError("Empty model response".into()))?;
-    let action =
-        crate::protocol::parse_response(choice, &output_text).map_err(ApiError::ParseError)?;
-    crate::validation::validate(&action, coordinate_base, true).map_err(ApiError::ParseError)?;
+    let action = match parse_and_validate(choice, &output_text, coordinate_base) {
+        Ok(action) => action,
+        Err(error) => return Ok(rejected_response(choice, &output_text, error)),
+    };
 
     #[cfg(debug_assertions)]
     println!("Parsed action: {}", action.action);
@@ -309,6 +310,43 @@ pub async fn call_computer_use_api(
     );
 
     Ok(response)
+}
+
+fn parse_and_validate(
+    choice: &ChatChoice,
+    output_text: &str,
+    coordinate_base: f64,
+) -> Result<ActionResult, String> {
+    let action = crate::protocol::parse_response(choice, output_text)?;
+    crate::validation::validate(&action, coordinate_base, true)?;
+    Ok(action)
+}
+
+fn rejected_response(choice: &ChatChoice, output_text: &str, error: String) -> AgentResponse {
+    // Retain only final output for diagnosis/repair, never reasoning or an
+    // executable proposal. Bound Unicode by characters without splitting UTF-8.
+    let mut diagnostic = output_text.to_string();
+    if !choice.message.tool_calls.is_empty() {
+        diagnostic.push_str("\nNative tool calls:\n");
+        diagnostic.push_str(&serde_json::to_string(&choice.message.tool_calls).unwrap_or_default());
+    }
+    let mut excerpt: String = diagnostic.chars().take(16000).collect();
+    if excerpt.len() < diagnostic.len() {
+        excerpt.push_str("\n[Response excerpt truncated]");
+    }
+    AgentResponse {
+        output_text: excerpt,
+        action: ActionResult {
+            action: "none".into(),
+            arguments: ActionResultArguments::default(),
+            progress: None,
+        },
+        coordinate_absolute: None,
+        success: false,
+        error: Some(ApiError::ParseError(error).to_string()),
+        is_done: false,
+        thinking: None,
+    }
 }
 
 /// Result of a zoom-refine (second) pass.
@@ -440,6 +478,13 @@ pub async fn refine_coordinate(
         Err(ApiError::Cancelled) => return Err(ApiError::Cancelled),
         Err(e) => return Err(e),
     };
+
+    if !resp.success {
+        return Err(ApiError::ParseError(
+            resp.error
+                .unwrap_or_else(|| "Invalid targeting response".into()),
+        ));
+    }
 
     // Resolve the crop-local click point. In box mode the model returns
     // [x0, y0, x1, y1]; click its center. Otherwise it returns [x, y] directly.
@@ -580,6 +625,34 @@ pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_responses_keep_bounded_diagnostics_but_never_an_action() {
+        for choice in [
+            serde_json::json!({"message":{"content":"<tool_call>{\"name\":\"computer\",\"arguments\":{\"action\":\"key\",\"keys\":[\"enter\"]}}</tool_call>","reasoning_content":"private reasoning"}}),
+            serde_json::json!({"message":{"content":null,"tool_calls":[{"function":{"name":"computer","arguments":"{\"action\":\"click\",\"coordinate\":[1001,5]}"}}]}}),
+        ] {
+            let choice: ChatChoice = serde_json::from_value(choice).unwrap();
+            let content = choice.message.content.as_deref().unwrap_or_default();
+            let error = parse_and_validate(&choice, content, 1000.0).unwrap_err();
+            let response = rejected_response(&choice, content, error);
+            assert!(!response.success);
+            assert_eq!(response.action.action, "none");
+            assert_eq!(response.action.arguments, ActionResultArguments::default());
+            assert!(response.action.progress.is_none());
+            assert!(
+                response.output_text.contains("computer")
+                    || response.output_text.contains("coordinate")
+            );
+            assert!(!response.output_text.contains("private reasoning"));
+            assert!(response
+                .error
+                .unwrap()
+                .starts_with("Failed to parse response:"));
+            let long = rejected_response(&choice, &"😀".repeat(20000), "bad output".into());
+            assert!(long.output_text.encode_utf16().count() < 33000);
+            assert!(long.output_text.ends_with("[Response excerpt truncated]"));
+        }
+    }
     #[test]
     fn thinking_is_display_only_and_does_not_rewrite_action_text() {
         let action = r#"{"action":"type","arguments":{"text":"<think>literal</think>"}}"#;

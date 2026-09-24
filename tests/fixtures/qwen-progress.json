@@ -1,0 +1,4 @@
+[
+  "<tool_call>\n{\"name\":\"computer\",\"arguments\":{\"action\":\"click\",\"coordinate\":[400,980],\"progress\":{\"next_milestone_id\":\"m1-1\",\"expected_outcome\":\"Chrome browser window opens and becomes active\"}}}\n</tool_call>",
+  "<tool_call>\n{\"name\":\"computer\",\"arguments\":{\"action\":\"click\",\"coordinate\":[480,50],\"progress\":{\"outcome\":{\"status\":\"succeeded\",\"evidence\":\"Chrome is open and active at its New Tab page with address bar visible at [480,50]\"},\"milestones\":[{\"id\":\"m1-1\",\"status\":\"completed\",\"evidence\":\"Chrome browser window is open and active at New Tab page\"}],\"next_milestone_id\":\"m1-2\",\"expected_outcome\":\"Address bar is focused and ready for typing\"}}}\n</tool_call>"
+]

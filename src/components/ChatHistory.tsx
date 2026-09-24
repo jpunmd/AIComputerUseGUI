@@ -220,7 +220,7 @@ export function ChatHistory({ messages, expandThinkingByDefault = false, debugMo
         >
           {/* System message styling */}
           {message.role === 'system' ? (
-            <div className="flex items-center gap-2 px-4 py-2 bg-dark-800/50 border border-dark-700 rounded-full text-sm">
+            <div className="flex items-start gap-2 max-w-full px-4 py-2 bg-dark-800/50 border border-dark-700 rounded-xl text-sm">
               {message.content.startsWith('✓') ? (
                 <CheckCircle className="w-4 h-4 text-green-400" />
               ) : message.content.startsWith('⚠') ? (
@@ -230,7 +230,15 @@ export function ChatHistory({ messages, expandThinkingByDefault = false, debugMo
               ) : (
                 <Info className="w-4 h-4 text-dark-400" />
               )}
-              <span className="text-dark-300">{message.content}</span>
+              <div className="min-w-0 text-dark-300">
+                <span>{message.content}</span>
+                {message.modelResponse && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-primary-400">View rejected model response</summary>
+                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs select-text">{message.modelResponse}</pre>
+                  </details>
+                )}
+              </div>
             </div>
           ) : (
             <>

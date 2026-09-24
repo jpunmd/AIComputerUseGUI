@@ -1,19 +1,25 @@
 //! Parse only final model output. Reasoning is never an execution channel.
 use crate::types::*;
 
+fn schema_error(context: &str, error: serde_json::Error) -> String {
+    // Preserve the actual schema failure for the bounded repair attempt, without
+    // letting a model-supplied field/value create an unbounded error message.
+    let detail: String = error.to_string().chars().take(700).collect();
+    format!("{context}: {detail}")
+}
+
 pub fn parse_json_action(text: &str) -> Result<ActionResult, String> {
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| {
-        "Invalid action JSON; return exactly one complete computer action".to_string()
-    })?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| schema_error("Invalid action JSON", e))?;
     if value.get("name").is_some() {
-        let call: ToolCall =
-            serde_json::from_value(value).map_err(|_| "Invalid computer tool call")?;
+        let call: ToolCall = serde_json::from_value(value)
+            .map_err(|e| schema_error("Invalid computer tool call", e))?;
         if call.name != "computer" {
             return Err("Only the computer tool is supported".into());
         }
         Ok(ActionResult::from(call))
     } else {
-        serde_json::from_value(value).map_err(|_| "Invalid action object".into())
+        serde_json::from_value(value).map_err(|e| schema_error("Invalid action object", e))
     }
 }
 
@@ -78,7 +84,7 @@ pub fn parse_response(choice: &ChatChoice, final_text: &str) -> Result<ActionRes
                 );
             }
             let arguments: ActionArguments = serde_json::from_str(&call.function.arguments)
-                .map_err(|_| "Invalid native tool arguments")?;
+                .map_err(|e| schema_error("Invalid native tool arguments", e))?;
             Ok(ActionResult::from(ToolCall {
                 name: "computer".into(),
                 arguments,
@@ -91,6 +97,38 @@ pub fn parse_response(choice: &ChatChoice, final_text: &str) -> Result<ActionRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_qwen_progress_responses_pass_wire_and_action_validation() {
+        let outputs: Vec<String> =
+            serde_json::from_str(include_str!("../../tests/fixtures/qwen-progress.json")).unwrap();
+        for output in outputs {
+            let action = parse_final_action(&output).unwrap();
+            crate::validation::validate(&action, 1000.0, true).unwrap();
+            assert!(action.progress.is_some());
+        }
+    }
+    #[test]
+    fn schema_errors_name_the_invalid_field_or_value_for_repair() {
+        let unknown = parse_json_action(
+            r#"{"name":"computer","arguments":{"action":"key","keys":["enter"]}}"#,
+        )
+        .unwrap_err();
+        assert!(unknown.contains("unknown field `keys`"));
+        let status = parse_json_action(r#"{"name":"computer","arguments":{"action":"click","coordinate":[400,980],"progress":{"milestones":[{"id":"m1-1","status":"pending","evidence":"Desktop visible"}]}}}"#).unwrap_err();
+        assert!(status.contains("unknown variant `pending`"));
+        assert!(status.contains("in_progress"));
+        let malformed = parse_json_action("{\"name\":").unwrap_err();
+        assert!(malformed.contains("line 1"));
+        let long = serde_json::json!({"name":"computer","arguments":{"action":"wait","progress":{"next_milestone_id":true}}, "💥".repeat(5000):true});
+        assert!(
+            parse_json_action(&long.to_string())
+                .unwrap_err()
+                .chars()
+                .count()
+                < 800
+        );
+    }
+
     #[test]
     fn progress_is_typed_and_round_trips_without_optional_nulls() {
         let call = serde_json::json!({"name":"computer","arguments":{"action":"done","text":"Saved","progress":{"milestones":[{"id":"m1-1","status":"completed","evidence":"Saved label visible"}],"notes":[{"kind":"question","text":"Which folder next?"}]}}});
