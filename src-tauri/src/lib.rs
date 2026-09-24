@@ -145,6 +145,9 @@ fn prepare_action(
     }
     let action: ActionResult =
         serde_json::from_str(&action).map_err(|_| "Invalid action payload")?;
+    if action.progress.is_some() {
+        return Err("Task progress cannot be submitted to the input executor".into());
+    }
     validation::validate(&action, 1000.0, false)?;
     actions::validate_keys(&action).map_err(|e| e.to_string())?;
     let observation = state.observation(&run_id, &observation_id)?;

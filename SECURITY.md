@@ -26,9 +26,13 @@ These come from the Tauri/GTK dependency graph. The glib fix requires 0.20+, out
 - The webview has explicit command permissions and restricted production CSP. Rust contacts the selected model endpoint with redirects disabled. Remote endpoints receive screenshots and text.
 - Sessions are validated on import/load. Imports are limited to 32 MB, 100 sessions, and 2,000 messages per session. Unknown fields are discarded. Restored tasks are stopped and require a new run/observation. Storage is local and unencrypted.
 - Plan text, prior transcripts, and screen text remain untrusted context. Per-action review is default; direct control is an explicit choice for each multi-turn run. This is not an OS sandbox or a guarantee against prompt injection.
+- Structured task progress is model-authored metadata. It cannot change the pinned user goal or grant approval. The frontend validates IDs, state changes, evidence, and memory budgets; Rust rejects unknown progress fields/types and bounds payloads. Progress is removed before action preparation, and the native command rejects proposals that still contain it.
+- Milestone completion and memory facts are attributed to model observations, never inferred from successful OS input submission. Saved evidence is historical and may be stale. Imported checkpoints do not independently prove their claimed facts; resuming always takes a new screenshot.
 
 ## Test coverage and limits
 
 Regression tests cover malformed/multiple/truncated actions, Unicode and quoted braces, null-content tool responses, reasoning isolation, Stop during HTTP and approvals, single-use approvals, replaced runs, moved windows, bounded history, follow-up context, session validation, planning without input, completion re-observation, repeat stopping, and failed zoom refinement.
+
+Task-memory regressions also cover evidence-linked milestone updates, blocked completion, bounded fact/path retention, atomic rejection of invalid updates, completed-work preservation during replanning, legacy checkpoint migration, late progress after Stop, and separation of memory from executable proposals.
 
 Automated tests do not validate a particular model's visual grounding or send mouse/keyboard input to real applications. Before relying on a model, manually test disposable tasks, Stop during generation/approval, the emergency shortcut, mixed display scaling, and window movement. Completion is judged by the model against a fresh screenshot, not independently verified through application APIs.

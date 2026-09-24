@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseSessionImport, validateSession } from '../src/agent/sessions';
+import { TaskMemory } from '../src/agent/memory';
 const session = {
   id: 'old',
   name: 'Test',
@@ -22,6 +23,34 @@ const session = {
   ],
 };
 describe('saved sessions', () => {
+  it('round-trips versioned progress, facts and receipts while discarding unknown authorization', () => {
+    const memory = new TaskMemory();
+    memory.start('Open report', true);
+    memory.observe('screen-1');
+    memory.setPlan('Open report');
+    memory.applyProgress({
+      milestones: [
+        { id: 'm1-1', status: 'completed', evidence: 'Editor visible' },
+      ],
+      notes: [
+        { kind: 'artifact', text: 'report.txt', evidence: 'Editor title' },
+      ],
+    });
+    const saved = {
+      ...session,
+      messages: [
+        { ...session.messages[0], task: { ...memory.task!, approved: true } },
+      ],
+    };
+    const restored = validateSession(saved).messages[0].task!;
+    expect(restored.plan[0].status).toBe('completed');
+    expect(restored.notes[0].text).toBe('report.txt');
+    expect(restored.status).toBe('stopped');
+    expect(restored).not.toHaveProperty('approved');
+    const invalid = structuredClone(saved);
+    invalid.messages[0].task.plan[0].evidence = undefined;
+    expect(() => validateSession(invalid)).toThrow('lacks observed evidence');
+  });
   it('imports a stopped checkpoint with new identity and no authorization fields', () => {
     const [result] = parseSessionImport(JSON.stringify([session]));
     expect(result.id).not.toBe('old');

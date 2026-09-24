@@ -51,6 +51,7 @@ pub fn parse_final_action(text: &str) -> Result<ActionResult, String> {
     // Prose is an answer, never proof that a computer task is complete.
     Ok(ActionResult {
         action: "none".into(),
+        progress: None,
         arguments: ActionResultArguments {
             text: Some(text.into()),
             ..Default::default()
@@ -90,6 +91,22 @@ pub fn parse_response(choice: &ChatChoice, final_text: &str) -> Result<ActionRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_is_typed_and_round_trips_without_optional_nulls() {
+        let call = serde_json::json!({"name":"computer","arguments":{"action":"done","text":"Saved","progress":{"milestones":[{"id":"m1-1","status":"completed","evidence":"Saved label visible"}],"notes":[{"kind":"question","text":"Which folder next?"}]}}});
+        let action = parse_json_action(&call.to_string()).unwrap();
+        let serialized = serde_json::to_value(&action).unwrap();
+        assert_eq!(serialized["progress"]["milestones"][0]["id"], "m1-1");
+        assert!(serialized["progress"].get("outcome").is_none());
+        assert!(serialized["progress"]["notes"][0].get("evidence").is_none());
+        assert!(serialized["arguments"].get("progress").is_none());
+        let mut forbidden = call.clone();
+        forbidden["arguments"]["progress"]["approved"] = true.into();
+        assert!(parse_json_action(&forbidden.to_string()).is_err());
+        let mut invalid = call;
+        invalid["arguments"]["progress"]["milestones"][0]["status"] = "authorized".into();
+        assert!(parse_json_action(&invalid.to_string()).is_err());
+    }
     #[test]
     fn prose_and_negated_completion_are_not_done() {
         for text in [

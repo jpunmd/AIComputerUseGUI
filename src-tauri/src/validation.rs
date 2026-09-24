@@ -7,6 +7,9 @@ pub fn validate(
     coordinate_base: f64,
     allow_box: bool,
 ) -> Result<(), String> {
+    if let Some(progress) = &action.progress {
+        validate_progress(progress)?;
+    }
     if !coordinate_base.is_finite() || coordinate_base <= 0.0 || coordinate_base > 10000.0 {
         return Err("Invalid coordinate base".into());
     }
@@ -108,6 +111,62 @@ pub fn is_mutating(action: &ActionResult) -> bool {
 
 pub fn pixel(value: f64, base: f64, size: u32, origin: i32) -> i32 {
     origin + (value / base * size.saturating_sub(1) as f64).round() as i32
+}
+
+fn validate_progress(progress: &crate::types::TaskProgress) -> Result<(), String> {
+    use crate::types::NoteKind;
+    let text = |value: &str, max: usize| {
+        if value.trim().is_empty() || value.chars().count() > max || value.contains('\0') {
+            Err("Invalid or oversized task progress text".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    if let Some(rows) = &progress.milestones {
+        if rows.len() > 7 {
+            return Err("Too many milestone updates".into());
+        }
+        for row in rows {
+            text(&row.id, 40)?;
+            text(&row.evidence, 500)?;
+        }
+    }
+    if let Some(outcome) = &progress.outcome {
+        text(&outcome.evidence, 500)?;
+    }
+    if let Some(notes) = &progress.notes {
+        if notes.len() > 6 {
+            return Err("Too many memory notes".into());
+        }
+        for note in notes {
+            text(&note.text, 400)?;
+            if let Some(id) = &note.id {
+                text(id, 40)?;
+            }
+            match &note.evidence {
+                Some(evidence) => text(evidence, 500)?,
+                None if note.kind == NoteKind::Question => (),
+                None => return Err("Memory facts require observed evidence".into()),
+            }
+        }
+    }
+    if let Some(ids) = &progress.resolve_questions {
+        if ids.len() > 6 {
+            return Err("Too many question resolutions".into());
+        }
+        for resolution in ids {
+            text(&resolution.id, 40)?;
+            text(&resolution.answer, 400)?;
+            text(&resolution.evidence, 500)?;
+        }
+    }
+    if let Some(id) = &progress.next_milestone_id {
+        text(id, 40)?;
+    }
+    if let Some(expected) = &progress.expected_outcome {
+        text(expected, 400)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

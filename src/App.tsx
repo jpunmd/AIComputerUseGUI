@@ -11,6 +11,7 @@ import { useAgent } from './hooks/useAgent';
 import { useSettings } from './hooks/useSettings';
 import { useSessions } from './hooks/useSessions';
 import { ActionResult } from './types';
+import { TaskPanel } from './components/TaskPanel';
 
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -309,10 +310,7 @@ function App() {
           }}>Continue task</button>}
         </div>
         {!supervised && <p className="text-sm text-amber-400">Direct control for this run: mouse and keyboard actions execute without review.</p>}
-        {task && <details className="text-sm text-dark-300" open={task.status==='planning' || planOnly}>
-          <summary className="cursor-pointer">Task: {task.status.replace('_',' ')} — {task.goal.slice(0,100)}</summary>
-          <ol className="list-decimal ml-5 mt-2 max-h-32 overflow-y-auto">{task.plan.map((step,i)=><li key={i}>{step}</li>)}</ol>
-        </details>}
+        {task && <TaskPanel task={task} expanded={planOnly} />}
       </div>
 
       {/* Main content */}

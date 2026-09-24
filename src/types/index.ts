@@ -24,6 +24,7 @@ export interface Coordinate {
 
 export interface ActionResult {
   action: string;
+  progress?: TaskProgress;
   arguments: {
     coordinate?: number[];
     text?: string;
@@ -107,8 +108,65 @@ export interface AppState {
 }
 
 export interface TaskRecord {
+  schemaVersion: 2;
   goal: string;
-  plan: string[];
+  plan: Milestone[];
   status: 'planning' | 'running' | 'stopped' | 'completed' | 'needs_user';
   summary: string;
+  notes: MemoryNote[];
+  receipts: ExecutionReceipt[];
+  planChanges: { revision: number; reason: string; step: number }[];
+  revision: number;
+  lastStep: number;
+  omittedNotes: number;
+}
+
+export type MilestoneStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'blocked';
+export interface Evidence {
+  text: string;
+  step: number;
+  observationId: string;
+  source: 'model_observation' | 'controller' | 'legacy';
+}
+export interface Milestone {
+  id: string;
+  title: string;
+  successCriteria: string;
+  status: MilestoneStatus;
+  attempts: number;
+  evidence?: Evidence;
+}
+export type NoteKind = 'fact' | 'artifact' | 'failure' | 'question';
+export interface MemoryNote {
+  id: string;
+  kind: NoteKind;
+  text: string;
+  evidence: Evidence;
+}
+export interface ExecutionReceipt {
+  step: number;
+  observationId: string;
+  milestoneId?: string;
+  action: string;
+  expected: string;
+  outcome: 'unverified' | 'succeeded' | 'failed' | 'uncertain';
+  evidence?: Evidence;
+}
+
+// Untrusted model metadata. It never contains executor authorization.
+export interface TaskProgress {
+  milestones?: {
+    id: string;
+    status: Exclude<MilestoneStatus, 'pending'>;
+    evidence: string;
+  }[];
+  outcome?: { status: 'succeeded' | 'failed' | 'uncertain'; evidence: string };
+  notes?: { id?: string; kind: NoteKind; text: string; evidence?: string }[];
+  resolve_questions?: { id: string; answer: string; evidence: string }[];
+  next_milestone_id?: string;
+  expected_outcome?: string;
 }

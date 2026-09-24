@@ -24,12 +24,15 @@ Single-turn mode proposes one action for manual execution. Multi-turn mode plans
 
 ## Staying on task
 
-- The original goal and up to seven plan milestones stay in every multi-turn request.
-- Model context contains at most six recent text turns, bounded to 24,000 JavaScript string characters, plus the pinned goal, plan, and ten bounded execution receipts. Only the current screenshot is sent.
-- Receipts record input submitted to Windows, **not verified success**. Old turns are omitted whole, and the model is told to ask for missing details. This is deterministic context compaction, not a semantic summary of all earlier facts.
-- Follow-up questions retain recent context. Clear chat resets it. Saved checkpoints retain the goal, plan, and receipts; resuming always re-observes the desktop.
-- Three identical consecutive action/screenshot pairs stop before the third execution. Turn/time limits also bound runs when animations or cursor changes defeat exact-image matching.
-- A `done` action needs completion evidence. Multi-turn completion requires a second `done` decision against a new screen. This is model judgment, not independent proof of success.
+- The original goal and up to seven milestones stay in every multi-turn request. Each milestone has a stable ID, observable success condition, status (pending, in progress, completed, or blocked), input count, and evidence from a numbered screen observation.
+- The model supplies compact progress updates alongside its next action, using the same inference request. Input receipts remain unverified until a later observation reports success, failure, or uncertainty. The controller requires that review before another input action.
+- Durable memory keeps model-extracted facts, exact paths/values, failed approaches, and open questions. Each note records its evidence and source step. Known notes can be updated and answered questions resolved by ID. New tasks clear this memory; Continue and saved checkpoints retain it.
+- Memory is bounded to 16 notes / 8,000 text-and-evidence characters, eight input receipts, and five plan revisions. Paths and unresolved questions receive priority during compaction. The task prompt is capped at 32,000 JavaScript string characters, preserving the original goal, plan, current request, and latest receipt. At most six recent conversation turns / 24,000 characters are supplied separately. Only the current screenshot is sent.
+- Two reported failures on the same milestone, or three identical consecutive action/screenshot pairs, trigger one plan revision before further input. A revision must explain the changed approach and preserve completed milestones. Continued lack of progress pauses the run. Turn/time limits still apply.
+- A `done` claim cannot complete a task with unfinished milestones, open questions, or unreviewed input. Once those are resolved, completion requires a second `done` decision against a new screen. This is model judgment, not independent proof of success.
+- The expandable task panel shows milestone statuses, success conditions, evidence, durable notes, and recent input results. Legacy text-only plans load as pending milestones; old execution summaries are treated as unverified history.
+
+See [task progress and memory protocol](docs/task-memory.md) for examples, migration behavior, and limits.
 
 ## Control and privacy
 
@@ -74,7 +77,7 @@ One OpenAI-style `message.tool_calls` function result named `computer` is also a
 | `type` | `text` (up to 8 KiB UTF-8) |
 | `key` | `key`, such as `ctrl+s` |
 | `wait`, `screenshot` | No arguments |
-| `plan` | `text`: one to seven newline-separated milestones |
+| `plan` | `text`: JSON containing `steps` with `title` and `success_criteria`; revised plans also require `reason` and retained milestone IDs. Legacy newline plans remain accepted. |
 | `confirm` | `text`: a question; does not authorize subsequent input itself |
 | `done` | `text`: observed completion evidence |
 
