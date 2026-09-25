@@ -238,7 +238,10 @@ pub async fn call_computer_use_api(
 
     // Build the chat request
     let request = ChatRequest {
-        response_format: Some(crate::protocol::response_format(coordinate_base, simple_tools)),
+        response_format: Some(crate::protocol::response_format(
+            coordinate_base,
+            simple_tools,
+        )),
         model: model_id.to_string(),
         messages,
         max_tokens: Some(4096),

@@ -179,8 +179,8 @@ mod tests {
 
     #[test]
     fn simple_format_is_flat_and_parses_into_a_report() {
-        let args = &response_format(1000.0, true)["json_schema"]["schema"]["properties"]
-            ["arguments"];
+        let args =
+            &response_format(1000.0, true)["json_schema"]["schema"]["properties"]["arguments"];
         assert_eq!(args["additionalProperties"], false);
         assert!(args["properties"].get("progress").is_none());
         for field in ["screen", "last_action", "step_done"] {
@@ -192,13 +192,18 @@ mod tests {
         let report = action.report.unwrap();
         assert_eq!(report.last_action, Some(LastAction::Worked));
         assert_eq!(report.step_done, Some(true));
-        let plain = parse_json_action(r#"{"name":"computer","arguments":{"action":"key","key":"enter"}}"#).unwrap();
+        let plain =
+            parse_json_action(r#"{"name":"computer","arguments":{"action":"key","key":"enter"}}"#)
+                .unwrap();
         assert!(plain.report.is_none());
         assert!(parse_json_action(r#"{"name":"computer","arguments":{"action":"key","key":"enter","last_action":"maybe"}}"#).is_err());
     }
     #[test]
     fn constrained_prompt_uses_json_examples_and_can_report_missing_targets() {
-        let prompt = structured_prompt("Example: <tool_call>{\"name\":\"computer\"}</tool_call>", false);
+        let prompt = structured_prompt(
+            "Example: <tool_call>{\"name\":\"computer\"}</tool_call>",
+            false,
+        );
         assert!(!prompt.contains("<tool_call>"));
         assert!(prompt.contains("action=none"));
         assert!(prompt.contains("inside arguments.progress"));

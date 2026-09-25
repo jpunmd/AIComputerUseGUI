@@ -213,7 +213,9 @@ mod tests {
     }
     #[test]
     fn commentary_text_is_dropped_only_from_non_text_actions() {
-        let mut key = action(serde_json::json!({"action":"key","arguments":{"key":"Escape","text":"Dismiss the dropdown"}}));
+        let mut key = action(
+            serde_json::json!({"action":"key","arguments":{"key":"Escape","text":"Dismiss the dropdown"}}),
+        );
         assert!(validate(&key, 1000.0, false).is_err());
         drop_commentary_text(&mut key);
         assert_eq!(key.arguments.text, None);
@@ -221,7 +223,9 @@ mod tests {
         let mut typed = action(serde_json::json!({"action":"type","arguments":{"text":"weather"}}));
         drop_commentary_text(&mut typed);
         assert_eq!(typed.arguments.text.as_deref(), Some("weather"));
-        let mut mixed = action(serde_json::json!({"action":"key","arguments":{"key":"enter","coordinate":[0,0],"text":"x"}}));
+        let mut mixed = action(
+            serde_json::json!({"action":"key","arguments":{"key":"enter","coordinate":[0,0],"text":"x"}}),
+        );
         drop_commentary_text(&mut mixed);
         assert!(validate(&mixed, 1000.0, false).is_err());
     }
