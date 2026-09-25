@@ -1,6 +1,6 @@
 [package]
 name = "ai-computer-use-gui"
-version = "1.2.2"
+version = "2.0.0"
 description = "AI Computer Use Agent powered by a vision-language model"
 authors = ["you"]
 edition = "2021"
@@ -25,6 +25,7 @@ enigo = "0.4"
 thiserror = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1", features = ["v4"] }
+tauri-plugin-dialog = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading"] }

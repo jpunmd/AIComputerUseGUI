@@ -17,7 +17,11 @@ export interface Settings {
   saveScreenshotsInSessions: boolean; // Include screenshots/zoom crops when saving sessions; off = text-only sessions (tiny storage)
   reviewEachAction: boolean; // Default for new runs: ask before each mouse/keyboard action (off = direct control)
   simpleToolFormat: boolean; // Flat tool call (screen/last_action/step_done) instead of the nested progress object; easier for small models
+  theme: Theme; // Color scheme; saved so the app reopens in the last-used mode
+  showSessions: boolean; // Saved-sessions sidebar is open
 }
+
+export type Theme = 'light' | 'dark';
 
 export interface Coordinate {
   x: number;

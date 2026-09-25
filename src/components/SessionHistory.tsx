@@ -1,12 +1,9 @@
 import { useRef, useState } from 'react';
 import { ChatSession, Message } from '../types';
-import { 
-  Trash2, 
-  Download, 
-  Upload, 
-  Clock, 
-  MessageSquare, 
-  ChevronRight,
+import {
+  Trash2,
+  Download,
+  Upload,
   Edit3,
   Check,
   X,
@@ -16,16 +13,23 @@ import {
 
 interface SessionHistoryProps {
   sessions: ChatSession[];
-  onLoadSession: (messages: Message[]) => void;
+  activeSessionId?: string | null;
+  disabled?: boolean; // A task is running; opening a session would replace its chat
+  onLoadSession: (messages: Message[], sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, newName: string) => void;
-  onExportSessions: (sessionIds?: string[]) => void;
+  onExportSessions: (sessionIds?: string[]) => Promise<number>; // count saved; 0 if cancelled
   onImportSessions: (file: File) => Promise<number>;
   onClearAllSessions: () => void;
 }
 
+const iconButton =
+  'p-1.5 rounded-md text-ink-400 hover:text-ink-50 hover:bg-ink-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+
 export function SessionHistory({
   sessions,
+  activeSessionId,
+  disabled = false,
   onLoadSession,
   onDeleteSession,
   onRenameSession,
@@ -35,8 +39,9 @@ export function SessionHistory({
 }: SessionHistoryProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [importError, setImportError] = useState<string | null>(null);
-  const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  // Result of the last import or export, shown briefly under the header.
+  const [notice, setNotice] = useState<{ error: boolean; text: string } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout>>();
   const [confirmClear, setConfirmClear] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -58,24 +63,32 @@ export function SessionHistory({
     setEditName('');
   };
 
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
+  const showNotice = (error: boolean, text: string) => {
+    clearTimeout(noticeTimer.current);
+    setNotice({ error, text });
+    noticeTimer.current = setTimeout(() => setNotice(null), error ? 5000 : 3000);
+  };
+
+  const plural = (count: number) => `${count} session${count !== 1 ? 's' : ''}`;
+
+  const handleExport = async (sessionIds?: string[]) => {
+    try {
+      const count = await onExportSessions(sessionIds);
+      if (count > 0) showNotice(false, `Exported ${plural(count)}`);
+    } catch (err) {
+      showNotice(true, `Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setImportError(null);
-    setImportSuccess(null);
-
     try {
       const count = await onImportSessions(file);
-      setImportSuccess(`Successfully imported ${count} session${count !== 1 ? 's' : ''}`);
-      setTimeout(() => setImportSuccess(null), 3000);
+      showNotice(false, `Imported ${plural(count)}`);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Failed to import');
-      setTimeout(() => setImportError(null), 5000);
+      showNotice(true, err instanceof Error ? err.message : 'Failed to import');
     }
 
     // Reset file input
@@ -103,176 +116,175 @@ export function SessionHistory({
     return session.messages.filter(m => m.role !== 'system').length;
   };
 
+  const loadSession = (session: ChatSession) => {
+    const messages = session.messages.map(m => ({
+      ...m,
+      timestamp: new Date(m.timestamp),
+    }));
+    onLoadSession(messages, session.id);
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header with actions */}
-      <div className="p-4 border-b border-dark-700">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-white">Saved Sessions</h2>
-          <span className="text-xs text-dark-400">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>
-        </div>
-        
-        <div className="flex gap-2">
+      <div className="flex items-center gap-1 pl-4 pr-2 py-3">
+        <h2 className="text-sm font-semibold text-ink-100">Saved sessions</h2>
+        {sessions.length > 0 && (
+          <span className="px-1.5 text-xs rounded-full bg-ink-700 text-ink-300">
+            {sessions.length}
+          </span>
+        )}
+        <div className="ml-auto flex items-center">
           <button
-            onClick={() => onExportSessions()}
-            disabled={sessions.length === 0}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-dark-800 hover:bg-dark-700 text-dark-300 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-            title="Export all sessions"
-          >
-            <Download className="w-4 h-4" />
-            Export All
-          </button>
-          
-          <button
-            onClick={handleImportClick}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-dark-800 hover:bg-dark-700 text-dark-300 hover:text-white transition-colors text-sm"
+            onClick={() => fileInputRef.current?.click()}
+            className={iconButton}
             title="Import sessions"
+            aria-label="Import sessions"
           >
             <Upload className="w-4 h-4" />
-            Import
           </button>
-          
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json"
-            onChange={handleFileChange}
-            className="hidden"
-          />
+          <button
+            onClick={() => handleExport()}
+            disabled={sessions.length === 0}
+            className={iconButton}
+            title="Export all sessions"
+            aria-label="Export all sessions"
+          >
+            <Download className="w-4 h-4" />
+          </button>
         </div>
-
-        {/* Import feedback */}
-        {importError && (
-          <div className="mt-2 px-3 py-2 rounded-lg bg-red-500/20 border border-red-500/50 text-red-400 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4" />
-            {importError}
-          </div>
-        )}
-        {importSuccess && (
-          <div className="mt-2 px-3 py-2 rounded-lg bg-green-500/20 border border-green-500/50 text-green-400 text-xs flex items-center gap-2">
-            <Check className="w-4 h-4" />
-            {importSuccess}
-          </div>
-        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json"
+          onChange={handleFileChange}
+          className="hidden"
+        />
       </div>
 
+      {/* Import feedback */}
+      {notice && (
+        <div
+          className={`mx-3 mb-2 px-3 py-2 rounded-lg border text-xs flex items-start gap-2 ${
+            notice.error
+              ? 'bg-danger/15 border-danger/40 text-danger'
+              : 'bg-success/15 border-success/40 text-success'
+          }`}
+        >
+          {notice.error ? <AlertCircle className="w-4 h-4 shrink-0" /> : <Check className="w-4 h-4 shrink-0" />}
+          {notice.text}
+        </div>
+      )}
+
       {/* Sessions list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto px-2">
         {sessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-dark-500 p-8">
-            <FolderOpen className="w-12 h-12 mb-4 opacity-50" />
-            <p className="text-center">No saved sessions yet</p>
-            <p className="text-sm mt-1 text-center">Complete a task and save it to see it here</p>
+          <div className="flex flex-col items-center text-center text-ink-500 px-4 py-10">
+            <FolderOpen className="w-8 h-8 mb-3 opacity-60" />
+            <p className="text-sm">No saved sessions yet</p>
+            <p className="text-xs mt-1">Finished tasks and chats you save appear here.</p>
           </div>
         ) : (
-          <div className="p-2 space-y-1">
-            {sessions.map((session) => (
-              <div
-                key={session.id}
-                className="group rounded-lg bg-dark-800/50 hover:bg-dark-800 border border-dark-700 hover:border-dark-600 transition-all"
-              >
-                {editingId === session.id ? (
-                  /* Edit mode */
-                  <div className="p-3">
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSaveEdit(session.id);
-                        if (e.key === 'Escape') handleCancelEdit();
-                      }}
-                      className="w-full px-2 py-1 rounded bg-dark-900 border border-dark-600 text-white text-sm focus:outline-none focus:border-primary-500"
-                      autoFocus
-                    />
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        onClick={() => handleSaveEdit(session.id)}
-                        className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 text-xs"
-                      >
-                        <Check className="w-3 h-3" />
-                        Save
-                      </button>
-                      <button
-                        onClick={handleCancelEdit}
-                        className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded bg-dark-700 text-dark-300 hover:bg-dark-600 text-xs"
-                      >
-                        <X className="w-3 h-3" />
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  /* View mode */
-                  <div className="p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-sm font-medium text-white truncate">
-                          {session.name}
-                        </h3>
-                        <div className="flex items-center gap-3 mt-1 text-xs text-dark-400">
-                          <span className="flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {formatDate(session.createdAt)}
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <MessageSquare className="w-3 h-3" />
-                            {getMessageCount(session)} messages
-                          </span>
-                        </div>
+          <ul className="space-y-0.5 pb-2">
+            {sessions.map((session) => {
+              const active = session.id === activeSessionId;
+              return (
+                <li key={session.id}>
+                  {editingId === session.id ? (
+                    <div className="p-2 rounded-lg bg-ink-800">
+                      <input
+                        type="text"
+                        value={editName}
+                        aria-label="Session name"
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveEdit(session.id);
+                          if (e.key === 'Escape') handleCancelEdit();
+                        }}
+                        className="w-full px-2 py-1 rounded bg-ink-950 border border-ink-600 text-ink-50 text-sm focus:outline-none focus:border-primary-500"
+                        autoFocus
+                      />
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={() => handleSaveEdit(session.id)}
+                          className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded bg-success/15 text-success hover:bg-success/25 text-xs"
+                        >
+                          <Check className="w-3 h-3" />
+                          Save
+                        </button>
+                        <button
+                          onClick={handleCancelEdit}
+                          className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded bg-ink-700 text-ink-300 hover:bg-ink-600 text-xs"
+                        >
+                          <X className="w-3 h-3" />
+                          Cancel
+                        </button>
                       </div>
-                      
-                      {/* Action buttons */}
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    </div>
+                  ) : (
+                    <div
+                      className={`group relative flex items-center rounded-lg transition-colors ${
+                        active ? 'bg-ink-800' : 'hover:bg-ink-800'
+                      }`}
+                    >
+                      {active && (
+                        <span aria-hidden="true" className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary-500" />
+                      )}
+                      <button
+                        onClick={() => loadSession(session)}
+                        disabled={disabled}
+                        aria-current={active ? 'true' : undefined}
+                        title={disabled ? 'Stop the current task to open a session' : session.name}
+                        className="flex-1 min-w-0 text-left px-3 py-2 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <span className={`block text-sm truncate ${active ? 'text-ink-50 font-medium' : 'text-ink-200'}`}>
+                          {session.name}
+                        </span>
+                        <span className="block text-xs text-ink-500 mt-0.5">
+                          {formatDate(session.createdAt)} · {getMessageCount(session)} messages
+                        </span>
+                      </button>
+
+                      {/* Row actions: overlaid on hover or keyboard focus, so
+                          the title gets the full width the rest of the time */}
+                      <div className="absolute inset-y-0 right-0 flex items-center pl-6 pr-1 rounded-r-lg bg-gradient-to-l from-ink-800 from-70% to-transparent opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity">
                         <button
                           onClick={() => handleStartEdit(session)}
-                          className="p-1.5 rounded hover:bg-dark-600 text-dark-400 hover:text-white transition-colors"
+                          className={iconButton}
                           title="Rename"
+                          aria-label={`Rename ${session.name}`}
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => onExportSessions([session.id])}
-                          className="p-1.5 rounded hover:bg-dark-600 text-dark-400 hover:text-white transition-colors"
+                          onClick={() => handleExport([session.id])}
+                          className={iconButton}
                           title="Export"
+                          aria-label={`Export ${session.name}`}
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => onDeleteSession(session.id)}
-                          className="p-1.5 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-400 transition-colors"
+                          className="p-1.5 rounded-md text-ink-400 hover:text-danger hover:bg-danger/15 transition-colors"
                           title="Delete"
+                          aria-label={`Delete ${session.name}`}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
-
-                    {/* Load button */}
-                    <button
-                      onClick={() => {
-                        const messages = session.messages.map(m => ({
-                          ...m,
-                          timestamp: new Date(m.timestamp),
-                        }));
-                        onLoadSession(messages);
-                      }}
-                      className="w-full mt-2 flex items-center justify-center gap-2 px-3 py-1.5 rounded bg-primary-500/20 hover:bg-primary-500/30 text-primary-400 text-xs transition-colors"
-                    >
-                      <ChevronRight className="w-3 h-3" />
-                      Load Session
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
 
       {/* Footer with clear all */}
       {sessions.length > 0 && (
-        <div className="p-3 border-t border-dark-700">
+        <div className="p-2 border-t border-ink-700">
           {confirmClear ? (
             <div className="flex gap-2">
               <button
@@ -280,14 +292,14 @@ export function SessionHistory({
                   onClearAllSessions();
                   setConfirmClear(false);
                 }}
-                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-danger/15 hover:bg-danger/25 text-danger text-sm transition-colors"
               >
                 <Check className="w-4 h-4" />
-                Confirm Delete All
+                Delete all
               </button>
               <button
                 onClick={() => setConfirmClear(false)}
-                className="px-3 py-2 rounded-lg bg-dark-800 hover:bg-dark-700 text-dark-300 text-sm transition-colors"
+                className="px-3 py-1.5 rounded-lg hover:bg-ink-800 text-ink-300 text-sm transition-colors"
               >
                 Cancel
               </button>
@@ -295,10 +307,10 @@ export function SessionHistory({
           ) : (
             <button
               onClick={() => setConfirmClear(true)}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-dark-800 hover:bg-dark-700 text-dark-400 hover:text-red-400 text-sm transition-colors"
+              className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg hover:bg-ink-800 text-ink-400 hover:text-danger text-sm transition-colors"
             >
               <Trash2 className="w-4 h-4" />
-              Clear All Sessions
+              Clear all sessions
             </button>
           )}
         </div>

@@ -14,6 +14,7 @@
     "allow-execute-action",
     "allow-test-api-connection",
     "allow-fetch-available-models",
-    "allow-get-screen-size"
+    "allow-get-screen-size",
+    "allow-export-sessions"
   ]
 }

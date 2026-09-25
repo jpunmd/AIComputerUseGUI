@@ -38,3 +38,17 @@ describe('Review each action setting', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ reviewEachAction: false });
   });
 });
+
+describe('Theme setting', () => {
+  it('remembers light or dark, and settles the old "system" value to the OS appearance', () => {
+    expect(sanitizeSettings({ theme: 'dark' }).theme).toBe('dark');
+    expect(sanitizeSettings({ theme: 'light' }).theme).toBe('light');
+    const matchMedia = vi.fn().mockReturnValue({ matches: true });
+    vi.stubGlobal('matchMedia', matchMedia);
+    try {
+      expect(sanitizeSettings({ theme: 'system' }).theme).toBe('dark');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
