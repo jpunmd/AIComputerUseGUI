@@ -2,6 +2,15 @@
 
 A Windows Tauri application that lets a local vision-language model propose and execute mouse and keyboard actions. It connects to an OpenAI-compatible `/v1/chat/completions` server. Use a model that accepts images and follows the computer-action format in Settings; text-only models cannot ground clicks from screenshots.
 
+## Recommended models
+
+| Model | Notes |
+| --- | --- |
+| **Qwen 3.8** (e.g. 27B) | Main development model, served locally by llama.cpp |
+| **Qwen 3.8 Flash-Next** | Faster option for the same workflow |
+
+Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint, and enter the exact model ID the server reports. Keep **Simple Tool Format** on (the default) for these and other local models: it asks for a flat tool call that they follow far more reliably than the full progress protocol. Thinking mode is on by default and its reasoning is shown expanded.
+
 ## Getting started
 
 Requirements: Windows, Node.js 22.13+ (or 24 LTS), stable Rust, Microsoft C++ build tools, and WebView2. See [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/).
@@ -22,7 +31,7 @@ Build for production with `npm run tauri build`.
 
 Every submitted task plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. There is no separate execution-mode switch. **Review each action** is in the main toolbar and in Settings; both control one saved default for new and resumed runs (on by default). Turning it off enables direct control for every run until it is turned back on; a warning stays visible in the main window while it is off. Choosing **Allow for this task** during a reviewed run enables direct control until that run ends. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
 
-Enable **Precision clicks** in the task toolbar to check each click in a magnified crop before submitting input. It is on by default for new settings; previously saved choices are preserved. The crop comes from the same native screenshot as the initial prediction, and targets are identified using the goal, milestone and expected result. Only the corrected click is executed. The crop is not overlaid with a reticle that could distract the model. This helps with small icons but cannot guarantee model accuracy.
+Enable **Precision clicks** in the task toolbar to check each click in a magnified crop before submitting input. It is off by default because it adds a second model call to every click; turn it on if clicks miss small targets. The crop comes from the same native screenshot as the initial prediction, and targets are identified using the goal, milestone and expected result. Only the corrected click is executed. The crop is not overlaid with a reticle that could distract the model. This helps with small icons but cannot guarantee model accuracy.
 
 ## Staying on task
 
@@ -55,13 +64,23 @@ Click the intended target before typing or pressing keys. If it changes or becom
 | System prompt | Editable instructions; mandatory execution rules are appended |
 | Plan Before Acting | Generate milestones before a new multi-turn task |
 | Simple Tool Format | On by default. Flat tool call for small local models; off selects the full progress/memory protocol |
-| Thinking mode | Show returned reasoning separately; reasoning is never executed or replayed |
-| Screenshot Max Dimension | Resize the primary screen image (256–3840 pixels) |
-| Precision clicks / box mode | Check a magnified crop of the same observation; inconclusive refinement stops execution |
+| Thinking mode | On by default, shown expanded. Reasoning is displayed separately and never executed or replayed |
+| Screenshot Max Dimension | Longest side of the image sent to the model (256–3840 pixels). Default and recommended: 1920 (1080p) |
+| Precision clicks / box mode | Off by default. Check a magnified crop of the same observation; inconclusive refinement stops execution |
 | Action Delay / Max Turns | Allow UI changes and bound the loop |
 | Save Screenshots in Sessions | Include images in saved/exported history; off by default |
 
+New defaults apply to fresh installs and to **Reset to Defaults** in Settings; previously saved settings keep their values.
+
 Coordinates use a 0–1000 grid mapped to the detected primary monitor, including its desktop offset.
+
+### Screen resolution and 4K monitors
+
+The recommended screenshot size is **1080p** (Screenshot Max Dimension 1920). The screen is captured at full native resolution and then downscaled so its longest side is 1920 pixels. A 4K (3840×2160) monitor becomes exactly 1920×1080, a clean 2:1 reduction.
+
+Downscaling does not affect where clicks land. The model answers in the 0–1000 grid, and the app maps that grid onto the monitor's full pixel area. The screenshot and the click mapping use the same monitor geometry, and a capture whose size does not match it is refused rather than risking a misplaced click. Windows display scaling therefore does not shift clicks.
+
+What 4K changes is detail. With Windows scaling at 150–200% (typical for 4K), text and icons stay readable at 1080p. At 100% scaling, UI elements become about half their usual size in the screenshot. If small targets are missed, raise the setting to 2560 (more tokens, slower) or enable **Precision clicks**, which re-checks each click on a crop taken from the full-resolution capture.
 
 ## Model protocol
 

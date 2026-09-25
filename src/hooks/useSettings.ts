@@ -52,11 +52,11 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   actionDelayMs: 1000, // Delay after action before next screenshot (ms)
   maxTurns: 20, // Maximum number of turns before stopping
-  screenshotMaxDimension: 1280, // Max screenshot dimension (lower = fewer tokens, less detail)
+  screenshotMaxDimension: 1920, // Longest side sent to the model; 1920 = 1080p (a 4K screen downscales exactly 2:1)
   enableThinking: true, // Thinking mode on by default (Qwen3-VL thinking models)
-  expandThinkingByDefault: false, // Thinking blocks collapsed by default; user clicks to expand
+  expandThinkingByDefault: true, // Show the model's reasoning expanded by default
   enablePlanning: true,
-  zoomRefine: true, // Check the intended target in a magnified crop before clicking.
+  zoomRefine: false, // Precision clicks: opt-in magnified-crop check before each click (an extra model call per click).
   zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
   boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default
@@ -115,7 +115,7 @@ export function sanitizeSettings(value: unknown): Settings {
   const bounded=(n:number,min:number,max:number,fallback:number)=>Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback;
   result.maxTurns=Math.round(bounded(result.maxTurns,1,100,20));
   result.actionDelayMs=bounded(result.actionDelayMs,0,10000,1000);
-  result.screenshotMaxDimension=Math.round(bounded(result.screenshotMaxDimension,256,3840,1280));
+  result.screenshotMaxDimension=Math.round(bounded(result.screenshotMaxDimension,256,3840,1920));
   result.zoomCropFraction=bounded(result.zoomCropFraction,0.05,1,0.3);
   return result;
 }

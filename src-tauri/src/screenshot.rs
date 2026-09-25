@@ -7,7 +7,7 @@ use xcap::Monitor;
 
 /// Default maximum dimension (width or height) for screenshots sent to the model
 /// This helps reduce token usage while maintaining enough detail for the model
-const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1280;
+const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1920;
 
 #[derive(Error, Debug)]
 pub enum ScreenshotError {

@@ -385,13 +385,13 @@ export function SettingsPanel({
             >
               <option value={768}>768px (Low - fastest, fewer tokens)</option>
               <option value={1024}>1024px (Medium-Low)</option>
-              <option value={1280}>1280px (Medium - recommended)</option>
-              <option value={1920}>1920px (High - 1080p equivalent)</option>
+              <option value={1280}>1280px (Medium)</option>
+              <option value={1920}>1920px (1080p - recommended)</option>
               <option value={2560}>2560px (Very High - 1440p equivalent)</option>
               <option value={3840}>3840px (Ultra - 4K, most tokens)</option>
             </select>
             <p className="text-xs text-dark-500">
-              Maximum width/height for screenshots sent to the model. Lower values use fewer tokens but may lose detail.
+              Longest side of the screenshot sent to the model. Clicks map to the full screen at any setting. 1080p suits most displays; a 4K screen is downscaled exactly 2:1. Lower values use fewer tokens but lose detail.
             </p>
           </div>
 

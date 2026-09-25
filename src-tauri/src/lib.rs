@@ -136,7 +136,7 @@ async fn refine_coordinate(
         &action_type,
         &query,
         crop_fraction.unwrap_or(0.3),
-        max_dimension.unwrap_or(1280),
+        max_dimension.unwrap_or(1920),
         1000.0,
         enable_thinking.unwrap_or(false),
         box_mode.unwrap_or(false),
