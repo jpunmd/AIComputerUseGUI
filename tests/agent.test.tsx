@@ -7,8 +7,10 @@ import { AgentResponse, TaskProgress } from '../src/types';
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+// Most tests exercise the full progress protocol; simple-format tests opt in.
 const settings = {
   ...DEFAULT_SETTINGS,
+  simpleToolFormat: false,
   enablePlanning: false,
   zoomRefine: false,
   actionDelayMs: 0,
@@ -535,6 +537,8 @@ describe('agent controller safety', () => {
     expect(
       result.current.messages.find((m) => m.modelResponse)?.modelResponse,
     ).toBe(rejected);
+    expect(result.current.messages.find((m) => m.modelResponse)?.content)
+      .toContain('unknown field `keys`');
     await act(async () => {
       result.current.pendingConfirmation!.onConfirm();
       await task;
@@ -544,28 +548,195 @@ describe('agent controller safety', () => {
     ).toHaveLength(1);
   });
 
-  it('pauses after one unsuccessful format repair without executing or discarding the diagnostics', async () => {
+  it('pauses after bounded format repairs without executing or discarding the diagnostics', async () => {
     const invalid = {
       ...reply('none'),
       success: false,
       output_text: '{"bad":"response"}',
       error: 'Failed to parse response: missing field action',
     };
-    responses = [invalid, invalid];
+    responses = [invalid, invalid, invalid];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
       await result.current.runTask('Open browser', settings);
     });
     expect(result.current.task?.status).toBe('needs_user');
     expect(result.current.messages.filter((m) => m.modelResponse)).toHaveLength(
-      2,
+      3,
     );
     expect(
       mocks.invoke.mock.calls.filter((c) => c[0] === 'process_computer_use'),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(mocks.invoke.mock.calls.some((c) => c[0] === 'prepare_action')).toBe(
       false,
     );
+  });
+
+  it('displays unsupported schema warnings and errors even when final output is empty', async () => {
+    responses = Array.from({ length: 3 }, () => ({
+      ...reply('none'),
+      success: false,
+      output_text: '',
+      format_warning: 'Server does not support schema-constrained output.',
+      error: 'Failed to parse response: The model returned no final answer or action',
+    }));
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask('Open browser', settings);
+    });
+    expect(result.current.messages.some((m) => m.content.includes('Server does not support'))).toBe(true);
+    expect(result.current.messages.some((m) => m.content.includes('Model response rejected.') && m.content.includes('no final answer'))).toBe(true);
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'prepare_action')).toBe(false);
+  });
+
+  it('executes a first input whose progress wrongly reports an outcome (regression)', async () => {
+    responses = [
+      reply('plan', {
+        text: JSON.stringify({
+          steps: [
+            { title: 'Open Chrome', success_criteria: 'Chrome window visible' },
+          ],
+        }),
+      }),
+      reply(
+        'left_click',
+        { coordinate: [150, 984] },
+        {
+          next_milestone_id: 'm1-1',
+          outcome: {
+            status: 'succeeded',
+            evidence: 'Desktop is visible with no browser window open yet',
+          },
+        },
+      ),
+      reply('none', { text: 'Stopping here' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'What is the weather in Philadelphia?',
+        { ...settings, enablePlanning: true },
+        false,
+      );
+    });
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+    expect(
+      result.current.messages.some((m) =>
+        m.content.includes('fresh observation'),
+      ),
+    ).toBe(false);
+    expect(result.current.task?.receipts[0]).toMatchObject({
+      milestoneId: 'm1-1',
+      outcome: 'unverified',
+    });
+  });
+
+  it('executes a click whose progress resolves an invented question ID (regression)', async () => {
+    responses = [
+      reply('plan', {
+        text: JSON.stringify({
+          steps: [
+            { title: 'Open Chrome', success_criteria: 'Chrome window visible' },
+          ],
+        }),
+      }),
+      reply(
+        'click',
+        { coordinate: [151, 975] },
+        {
+          next_milestone_id: 'm1-1',
+          outcome: {
+            status: 'succeeded',
+            evidence: 'Desktop is visible with Chrome icon in the taskbar',
+          },
+          resolve_questions: [
+            {
+              id: 'browser_location',
+              answer: 'Chrome browser icon is visible in the taskbar',
+              evidence: 'Chrome icon visible in taskbar',
+            },
+          ],
+        },
+      ),
+      reply('none', { text: 'Stopping here' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        "What's the weather in philadelphia like?",
+        { ...settings, enablePlanning: true },
+        false,
+      );
+    });
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+    expect(
+      result.current.messages.some((m) => m.content.includes('invalid response')),
+    ).toBe(false);
+  });
+
+  it('simple format: runs a flat tool-call task without any progress object', async () => {
+    const flat = (
+      action: string,
+      args: object,
+      report?: AgentResponse['action']['report'],
+    ): AgentResponse => ({
+      ...reply(action, args),
+      action: { action, arguments: args, ...(report ? { report } : {}) },
+    });
+    responses = [
+      reply('plan', {
+        text: JSON.stringify({
+          steps: [
+            { title: 'Open Chrome', success_criteria: 'Chrome window visible' },
+            { title: 'Search', success_criteria: 'Weather results visible' },
+          ],
+        }),
+      }),
+      flat('click', { coordinate: [151, 975] }, { screen: 'Desktop' }),
+      // No last_action and no step flag: previously a hard failure.
+      flat('key', { key: 'ctrl+l' }),
+      flat(
+        'type',
+        { text: 'weather philadelphia' },
+        { screen: 'Chrome open', last_action: 'worked', step_done: true },
+      ),
+      flat('done', { text: 'Weather for Philadelphia is shown' }),
+      flat('done', { text: 'Weather still shown' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Weather in Philadelphia',
+        { ...settings, simpleToolFormat: true, enablePlanning: true },
+        false,
+      );
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.task?.status).toBe('completed');
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(3);
+    expect(result.current.task?.receipts.map((r) => r.outcome)).toEqual([
+      'uncertain',
+      'succeeded',
+      'succeeded',
+    ]);
+    expect(result.current.task?.plan.map((s) => s.status)).toEqual([
+      'completed',
+      'completed',
+    ]);
+    const calls = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    );
+    expect(calls[0][1].simpleTools).toBe(true);
+    expect(calls[0][1].systemPrompt).toContain('step_done');
+    expect(calls[0][1].systemPrompt).not.toContain('resolve_questions');
+    expect(calls[2][1].query).toContain('Set last_action from THIS screenshot');
+    expect(calls[2][1].query).not.toContain('progress.outcome');
   });
 
   it('tracks two milestones through observed outcomes and keeps metadata out of native input', async () => {

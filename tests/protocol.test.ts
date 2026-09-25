@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSystemPrompt,
   COMPUTER_TOOL,
+  SIMPLE_COMPUTER_TOOL,
+  SIMPLE_RULES,
   SYSTEM_RULES,
 } from '../src/agent/protocol';
 import { DEFAULT_SYSTEM_PROMPT } from '../src/hooks/useSettings';
@@ -55,6 +57,22 @@ describe('model wire instructions', () => {
       expect(call.name).toBe('computer');
       expect(() => parseProgress(call.arguments.progress)).not.toThrow();
       expect(call).not.toHaveProperty('progress');
+    }
+  });
+
+  it('simple format examples use only fields from the flat schema', () => {
+    const prompt = buildSystemPrompt(DEFAULT_SYSTEM_PROMPT, true);
+    const definitions = [...prompt.matchAll(/<tools>([\s\S]*?)<\/tools>/g)];
+    expect(definitions).toHaveLength(1);
+    expect(JSON.parse(definitions[0][1])).toEqual(SIMPLE_COMPUTER_TOOL);
+    const fields = Object.keys(SIMPLE_COMPUTER_TOOL.function.parameters.properties);
+    expect(fields).not.toContain('progress');
+    const examples = [...SIMPLE_RULES.matchAll(/<tool_call>(.*?)<\/tool_call>/g)];
+    expect(examples).toHaveLength(2);
+    for (const [, json] of examples) {
+      const call = JSON.parse(json);
+      expect(call.name).toBe('computer');
+      for (const key of Object.keys(call.arguments)) expect(fields).toContain(key);
     }
   });
 });

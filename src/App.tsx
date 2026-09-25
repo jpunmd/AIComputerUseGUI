@@ -25,7 +25,6 @@ import { TaskPanel } from './components/TaskPanel';
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [supervised, setSupervised] = useState(true);
   const [planOnly, setPlanOnly] = useState(false);
   // Dry run: ask the model for one action and draw a crosshair where it would
   // click, without moving the mouse. For calibrating coordinate accuracy.
@@ -33,6 +32,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'history'>('chat');
 
   const { settings, updateSettings, resetSettings } = useSettings();
+  // Saved default from Settings; applied when each run starts.
+  const supervised = settings.reviewEachAction;
   const {
     isProcessing,
     messages,
@@ -131,11 +132,7 @@ function App() {
       await previewAction(query, settings);
       return;
     }
-    try {
-      await runTask(query, settings, supervised, false, planOnly);
-    } finally {
-      setSupervised(true);
-    }
+    await runTask(query, settings, supervised, false, planOnly);
   };
 
   return (
@@ -247,12 +244,17 @@ function App() {
 
       <div className="px-6 py-3 border-b border-dark-700 bg-dark-900 space-y-2">
         <div className="flex flex-wrap items-center gap-5 text-sm text-dark-200">
-          <label className="flex items-center gap-2">
+          <label
+            className="flex items-center gap-2"
+            title="Ask before each mouse/keyboard action. Saved as the default (also in Settings)."
+          >
             <input
               type="checkbox"
               checked={isProcessing ? !isDirectControl : supervised}
               disabled={isProcessing}
-              onChange={(e) => setSupervised(e.target.checked)}
+              onChange={(e) =>
+                updateSettings({ reviewEachAction: e.target.checked })
+              }
             />
             Review each action
           </label>
@@ -286,16 +288,12 @@ function App() {
               className="px-3 py-1 rounded bg-primary-500/20 text-primary-300 disabled:opacity-50"
               onClick={async () => {
                 setPlanOnly(false);
-                try {
-                  await runTask(
-                    'Continue the original task from the current screen.',
-                    settings,
-                    supervised,
-                    true,
-                  );
-                } finally {
-                  setSupervised(true);
-                }
+                await runTask(
+                  'Continue the original task from the current screen.',
+                  settings,
+                  supervised,
+                  true,
+                );
               }}
             >
               Continue task
@@ -305,8 +303,9 @@ function App() {
         {((isProcessing && isDirectControl) ||
           (!isProcessing && !supervised)) && (
           <p className="text-sm text-amber-400">
-            Direct control for this run: mouse and keyboard actions execute
-            without review.
+            {isProcessing && supervised
+              ? 'Direct control for this run: mouse and keyboard actions execute without review.'
+              : 'Direct control: mouse and keyboard actions execute without review. Turn on Review each action to approve each action.'}
           </p>
         )}
         {task && <TaskPanel task={task} expanded={planOnly} />}

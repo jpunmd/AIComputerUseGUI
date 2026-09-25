@@ -61,6 +61,8 @@ export const DEFAULT_SETTINGS: Settings = {
   boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default
   saveScreenshotsInSessions: false, // Opt in to persisting desktop images.
+  reviewEachAction: true, // Ask before each mouse/keyboard action unless the user saves direct control as the default.
+  simpleToolFormat: true, // Flat tool call that small local models follow reliably; off = full progress/memory protocol.
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';

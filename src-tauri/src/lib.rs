@@ -86,6 +86,7 @@ async fn process_computer_use(
     system_prompt: String,
     enable_thinking: Option<bool>,
     prior_turns: Option<Vec<types::PriorTurn>>,
+    simple_tools: Option<bool>,
     state: Control<'_>,
 ) -> Result<AgentResponse, String> {
     let token = state.token(&run_id)?;
@@ -100,6 +101,7 @@ async fn process_computer_use(
         enable_thinking.unwrap_or(false),
         prior_turns,
         1000.0,
+        simple_tools.unwrap_or(false),
         &token,
     )
     .await

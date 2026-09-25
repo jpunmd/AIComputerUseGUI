@@ -10,6 +10,11 @@ pub fn validate(
     if let Some(progress) = &action.progress {
         validate_progress(progress)?;
     }
+    if let Some(screen) = action.report.as_ref().and_then(|r| r.screen.as_deref()) {
+        if screen.trim().is_empty() || screen.chars().count() > 500 || screen.contains('\0') {
+            return Err("Invalid or oversized screen description".into());
+        }
+    }
     if !coordinate_base.is_finite() || coordinate_base <= 0.0 || coordinate_base > 10000.0 {
         return Err("Invalid coordinate base".into());
     }
@@ -93,6 +98,19 @@ pub fn validate(
         return Err("Arguments do not match the action type".into());
     }
     Ok(())
+}
+
+/// Models often put a description in `text` on clicks and key presses. Text is
+/// only an input for the text actions, so elsewhere it is commentary: dropping
+/// it can only remove input, never add or redirect it. Other contradictory
+/// fields (a coordinate on a key press, etc.) are still rejected by `validate`.
+pub fn drop_commentary_text(action: &mut ActionResult) {
+    if !matches!(
+        action.action.as_str(),
+        "type" | "confirm" | "done" | "none" | "plan"
+    ) {
+        action.arguments.text = None;
+    }
 }
 
 pub fn is_mutating(action: &ActionResult) -> bool {
@@ -192,6 +210,20 @@ mod tests {
         for base in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(validate(&click, base, false).is_err());
         }
+    }
+    #[test]
+    fn commentary_text_is_dropped_only_from_non_text_actions() {
+        let mut key = action(serde_json::json!({"action":"key","arguments":{"key":"Escape","text":"Dismiss the dropdown"}}));
+        assert!(validate(&key, 1000.0, false).is_err());
+        drop_commentary_text(&mut key);
+        assert_eq!(key.arguments.text, None);
+        assert!(validate(&key, 1000.0, false).is_ok());
+        let mut typed = action(serde_json::json!({"action":"type","arguments":{"text":"weather"}}));
+        drop_commentary_text(&mut typed);
+        assert_eq!(typed.arguments.text.as_deref(), Some("weather"));
+        let mut mixed = action(serde_json::json!({"action":"key","arguments":{"key":"enter","coordinate":[0,0],"text":"x"}}));
+        drop_commentary_text(&mut mixed);
+        assert!(validate(&mixed, 1000.0, false).is_err());
     }
     #[test]
     fn pixels_include_monitor_origin_and_remain_inside_display() {

@@ -42,6 +42,8 @@ function describeAction(action: ActionResult): string {
   return `${action.action.replace(/_/g, ' ')} at ${a.coordinate?.join(', ')}`;
 }
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Local models occasionally need more than one nudge to fix their wire format.
+export const MAX_FORMAT_REPAIRS = 2;
 
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -190,7 +192,7 @@ export function useAgent() {
       step?: number,
     ) => {
       const boxFirst = settings.boxRefine && !settings.zoomRefine;
-      const prompt = memory.current.prompt(query);
+      const prompt = memory.current.prompt(query, settings.simpleToolFormat);
       const response = await invoke<AgentResponse>('process_computer_use', {
         runId: assertRunning(),
         screenshotBase64: shot.base64_image,
@@ -200,19 +202,24 @@ export function useAgent() {
         displayWidth: shot.image_width,
         displayHeight: shot.image_height,
         systemPrompt:
-          buildSystemPrompt(settings.systemPrompt) +
+          buildSystemPrompt(settings.systemPrompt, settings.simpleToolFormat) +
           (boxFirst
             ? '\nFor click actions, coordinate must be a tight [x0,y0,x1,y1] bounding box in 0–1000 space.'
             : ''),
         enableThinking: settings.enableThinking,
         priorTurns: memory.current.context(),
+        simpleTools: settings.simpleToolFormat,
       });
       assertRunning();
+      if (response.format_warning) message('system', response.format_warning);
       if (!response.success) {
+        message(
+          'system',
+          'Model response rejected. No input was executed.\n' +
+            (response.error || 'Model request failed'),
+          response.output_text ? { modelResponse: response.output_text } : {},
+        );
         if (response.output_text) {
-          message('system', 'Model response rejected. No input was executed.', {
-            modelResponse: response.output_text,
-          });
           memory.current.record(
             query,
             'Rejected output (not executed; correct its format):\n' +
@@ -471,8 +478,30 @@ export function useAgent() {
               throw new TaskUpdateError(
                 'return a plan before attempting input',
               );
-            if (response.action.progress)
-              memory.current.applyProgress(response.action.progress);
+            if (
+              settings.simpleToolFormat &&
+              !response.action.progress &&
+              memory.current.task
+            ) {
+              // Simple format: the controller derives milestones/outcomes
+              // from the flat report instead of asking the model for them.
+              response.action.progress = memory.current.progressFromReport(
+                response.action.report,
+                response.action.action === 'done'
+                  ? response.action.arguments.text || ''
+                  : undefined,
+              );
+            }
+            if (response.action.progress) {
+              // Use the accepted progress so dropped fields (for example a
+              // stale next_milestone_id) never reach action targeting.
+              response.action.progress = memory.current.applyProgress(
+                response.action.progress,
+              );
+              const ignored = memory.current.ignoredUpdates;
+              if (ignored.length && settings.debugMode)
+                message('system', 'Ignored model bookkeeping: ' + ignored.join('; '));
+            }
             if (response.action.action === 'plan')
               memory.current.setPlan(response.action.arguments.text || '');
             if (isInput(response.action))
@@ -487,16 +516,17 @@ export function useAgent() {
             if (
               (String(err).includes('Failed to parse response') ||
                 err instanceof TaskUpdateError) &&
-              repair++ < 1
+              repair++ < MAX_FORMAT_REPAIRS
             ) {
               message(
                 'system',
-                'The model returned an invalid format. Asking it to correct the response once.',
+                `The model returned an invalid response. Asking it to correct it (${repair}/${MAX_FORMAT_REPAIRS}).\n` +
+                  errorMessage(err),
               );
               next =
                 'Your last output was invalid: ' +
                 String(err) +
-                '. Return exactly one complete final computer tool_call with valid progress/arguments. No input was executed for that proposal.';
+                '. Return exactly one complete final computer tool_call with valid arguments. No input was executed for that proposal.';
               turn++;
               continue;
             }

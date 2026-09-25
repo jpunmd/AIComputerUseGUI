@@ -15,6 +15,8 @@ export interface Settings {
   boxRefine: boolean; // Model returns a bounding box of the target; we click its center. Applies to the final grounding pass (pass 2 when zoomRefine is on, pass 1 otherwise)
   debugMode: boolean; // Show developer instruments (the calibration probe in the expanded screenshot view)
   saveScreenshotsInSessions: boolean; // Include screenshots/zoom crops when saving sessions; off = text-only sessions (tiny storage)
+  reviewEachAction: boolean; // Default for new runs: ask before each mouse/keyboard action (off = direct control)
+  simpleToolFormat: boolean; // Flat tool call (screen/last_action/step_done) instead of the nested progress object; easier for small models
 }
 
 export interface Coordinate {
@@ -22,9 +24,17 @@ export interface Coordinate {
   y: number;
 }
 
+// Simple tool format: flat observations the controller turns into TaskProgress.
+export interface StepReport {
+  screen?: string;
+  last_action?: 'worked' | 'failed' | 'unclear';
+  step_done?: boolean;
+}
+
 export interface ActionResult {
   action: string;
   progress?: TaskProgress;
+  report?: StepReport;
   arguments: {
     coordinate?: number[];
     text?: string;
@@ -37,6 +47,7 @@ export interface ActionResult {
 }
 
 export interface AgentResponse {
+  format_warning?: string;
   output_text: string;
   action: ActionResult;
   coordinate_absolute?: Coordinate;

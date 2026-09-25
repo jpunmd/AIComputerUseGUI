@@ -143,9 +143,11 @@ describe('task progress and durable memory', () => {
     memory.submitted(input, memory.actionContext(input));
     expect(memory.task!.plan[0].status).toBe('in_progress');
     expect(memory.task!.receipts[0].outcome).toBe('unverified');
-    expect(() => memory.applyProgress({ outcome: observed })).toThrow(
-      'fresh observation',
-    );
+    // An outcome for input from this same screenshot cannot be observed yet;
+    // it is dropped rather than failing the task, and the input stays unverified.
+    expect(memory.applyProgress({ outcome: observed }).outcome).toBeUndefined();
+    expect(memory.ignoredUpdates[0]).toContain('not been observed');
+    expect(memory.task!.receipts[0].outcome).toBe('unverified');
     expect(() => memory.actionContext(input)).toThrow(
       'review the previous input',
     );
@@ -229,6 +231,115 @@ describe('task progress and durable memory', () => {
       true,
     );
     expect(memory.canComplete()).toBe(false);
+  });
+
+  it('ignores an outcome reported before any input instead of failing the task', () => {
+    const memory = setup(),
+      id = memory.task!.plan[0].id;
+    memory.observe('screen-2');
+    const progress = memory.applyProgress({
+      next_milestone_id: id,
+      outcome: {
+        status: 'succeeded',
+        evidence: 'Desktop is visible with no browser window open yet',
+      },
+    });
+    expect(progress.outcome).toBeUndefined();
+    expect(progress.next_milestone_id).toBe(id);
+    expect(memory.ignoredUpdates[0]).toContain('no executed input');
+    expect(memory.task!.receipts).toHaveLength(0);
+    expect(memory.prompt('Continue')).toContain(
+      'Do NOT include progress.outcome',
+    );
+    expect(memory.actionContext(input, progress).milestoneId).toBe(id);
+  });
+
+  it('keeps an answer to an invented question ID as a fact instead of failing the task', () => {
+    const memory = setup();
+    memory.observe('screen-2');
+    memory.applyProgress({
+      resolve_questions: [
+        {
+          id: 'browser_location',
+          answer: 'Chrome browser icon is visible in the taskbar',
+          evidence: 'Chrome icon visible in taskbar',
+        },
+      ],
+      notes: [
+        {
+          id: 'made_up',
+          kind: 'fact',
+          text: 'Desktop is showing',
+          evidence: 'No windows open',
+        },
+      ],
+    });
+    expect(memory.ignoredUpdates.join(' ')).toContain('browser_location');
+    expect(memory.ignoredUpdates.join(' ')).toContain('made_up');
+    expect(memory.task!.notes.map((n) => [n.kind, n.text])).toEqual([
+      ['fact', 'Chrome browser icon is visible in the taskbar'],
+      ['fact', 'Desktop is showing'],
+    ]);
+    expect(memory.task!.notes.some((n) => n.id === 'made_up')).toBe(false);
+  });
+
+  it('simple format: derives outcomes and step completion from the flat report', () => {
+    const memory = setup(),
+      [first, second] = memory.task!.plan;
+    // Nothing to review before the first input; the report cannot claim an outcome.
+    expect(memory.progressFromReport({ last_action: 'worked' })).toEqual({});
+    expect(memory.prompt('Continue', true)).toContain('omit last_action');
+    memory.submitted(input, memory.actionContext(input));
+    memory.observe('screen-2');
+    // Omitted last_action never blocks the next action: it becomes uncertain.
+    const unclear = memory.progressFromReport(undefined);
+    expect(unclear.outcome?.status).toBe('uncertain');
+    memory.applyProgress(unclear);
+    expect(() => memory.actionContext(input)).not.toThrow();
+    // A later step_done settles the earlier unclear review and completes the step.
+    memory.observe('screen-3');
+    const done = memory.progressFromReport({
+      screen: 'Report text visible',
+      step_done: true,
+    });
+    expect(done.outcome?.status).toBe('succeeded');
+    memory.applyProgress(done);
+    expect(memory.task!.plan[0].status).toBe('completed');
+    expect(memory.task!.plan[0].evidence?.text).toBe('Report text visible');
+    // A failed action never completes a step, even if step_done is set.
+    memory.submitted(input, memory.actionContext(input));
+    memory.observe('screen-4');
+    const failed = memory.progressFromReport({
+      last_action: 'failed',
+      step_done: true,
+    });
+    expect(failed).toMatchObject({ outcome: { status: 'failed' } });
+    expect(failed.milestones).toBeUndefined();
+    memory.applyProgress(failed);
+    // done completes every unfinished step with the done evidence.
+    memory.observe('screen-5');
+    const finish = memory.progressFromReport({}, 'Saved label visible');
+    expect(finish.milestones).toEqual([
+      { id: second.id, status: 'completed', evidence: 'Saved label visible' },
+    ]);
+    memory.applyProgress(finish);
+    expect(memory.canComplete()).toBe(true);
+    expect(memory.prompt('Continue', true)).toContain('[' + first.id + '] done');
+  });
+
+  it('falls back to the next unfinished milestone when next_milestone_id is stale', () => {
+    const memory = setup(),
+      [first, second] = memory.task!.plan;
+    memory.applyProgress({
+      milestones: [
+        { id: first.id, status: 'completed', evidence: 'Report text visible' },
+      ],
+    });
+    memory.observe('screen-2');
+    const progress = memory.applyProgress({ next_milestone_id: first.id });
+    expect(progress.next_milestone_id).toBeUndefined();
+    expect(memory.ignoredUpdates[0]).toContain('completed');
+    expect(memory.actionContext(input, progress).milestoneId).toBe(second.id);
   });
 
   it('applies progress atomically and rejects invented IDs, approval fields and unsupported facts', () => {

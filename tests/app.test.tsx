@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   setError: vi.fn(),
   saveSession: vi.fn(),
   updateSettings: vi.fn(),
+  settings: {} as Record<string, unknown>,
 }));
 vi.mock('../src/hooks/useAgent', () => ({
   useAgent: () => ({
@@ -38,7 +39,7 @@ vi.mock('../src/hooks/useSettings', async (importOriginal) => {
   return {
     ...original,
     useSettings: () => ({
-      settings: original.DEFAULT_SETTINGS,
+      settings: { ...original.DEFAULT_SETTINGS, ...mocks.settings },
       updateSettings: mocks.updateSettings,
       resetSettings: vi.fn(),
     }),
@@ -57,6 +58,7 @@ vi.mock('../src/components', async () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mocks.settings = {};
 });
 
 describe('standard task workflow', () => {
@@ -78,6 +80,25 @@ describe('standard task workflow', () => {
     expect(mocks.runTask.mock.calls[0][0]).toBe('Find the weather');
     expect(mocks.runTask.mock.calls[0].slice(2)).toEqual([true, false, false]);
     expect(mocks.previewAction).not.toHaveBeenCalled();
+  });
+  it('uses the saved Review each action default and saves toolbar changes', async () => {
+    mocks.settings = { reviewEachAction: false };
+    render(<App />);
+    const toggle = screen.getByRole('checkbox', {
+      name: 'Review each action',
+    }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(screen.getByText(/Direct control/)).toBeDefined();
+    fireEvent.click(toggle);
+    expect(mocks.updateSettings).toHaveBeenCalledWith({
+      reviewEachAction: true,
+    });
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Find the weather' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(mocks.runTask).toHaveBeenCalledOnce());
+    expect(mocks.runTask.mock.calls[0][2]).toBe(false);
   });
   it('keeps plan-only as a task-runner option', async () => {
     render(<App />);

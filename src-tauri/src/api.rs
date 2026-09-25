@@ -67,6 +67,64 @@ pub enum ApiError {
     Cancelled,
 }
 
+fn unsupported_response_format(error: &ApiError) -> bool {
+    let ApiError::ApiResponseError(detail) = error else {
+        return false;
+    };
+    let detail = detail.to_ascii_lowercase();
+    // Never downgrade on a malformed schema, auth/rate-limit/server error or
+    // invalid model output. Only an explicit unsupported-parameter response.
+    (detail.starts_with("http 400:") || detail.starts_with("http 422:"))
+        && (detail.contains("response_format") || detail.contains("json_schema"))
+        && [
+            "not supported",
+            "unsupported",
+            "unknown parameter",
+            "unrecognized request argument",
+            "extra inputs are not permitted",
+        ]
+        .iter()
+        .any(|phrase| detail.contains(phrase))
+        && !detail.contains("invalid schema")
+        && !detail.contains("schema keyword")
+}
+
+async fn request_completion(
+    client: &Client,
+    endpoint: reqwest::Url,
+    mut request: ChatRequest,
+    original_prompt: &str,
+    cancel: &CancellationToken,
+) -> Result<(ChatResponse, Option<String>), ApiError> {
+    let mut warning = None;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ApiError::Cancelled);
+        }
+        let pending = async {
+            let response = client.post(endpoint.clone()).json(&request).send().await?;
+            decode_response::<ChatResponse>(response).await
+        };
+        let result = tokio::select! {
+            result = pending => result,
+            _ = cancel.cancelled() => return Err(ApiError::Cancelled),
+        };
+        match result {
+            Ok(response) => return Ok((response, warning)),
+            Err(error)
+                if request.response_format.is_some() && unsupported_response_format(&error) =>
+            {
+                request.response_format = None;
+                request.messages[0].content = vec![ContentPart::Text {
+                    text: original_prompt.into(),
+                }];
+                warning = Some("The model server does not support schema-constrained output. Retried with prompt instructions; all responses are still validated before input is executed.".into());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Call the vision-language model API for computer use
 #[allow(clippy::too_many_arguments)]
 pub async fn call_computer_use_api(
@@ -80,6 +138,7 @@ pub async fn call_computer_use_api(
     enable_thinking: bool,
     prior_turns: Option<Vec<PriorTurn>>,
     coordinate_base: f64,
+    simple_tools: bool,
     cancel: &CancellationToken,
 ) -> Result<AgentResponse, ApiError> {
     if cancel.is_cancelled() {
@@ -150,7 +209,7 @@ pub async fn call_computer_use_api(
     messages.push(ChatMessage {
         role: "system".to_string(),
         content: vec![ContentPart::Text {
-            text: system_prompt.to_string(),
+            text: crate::protocol::structured_prompt(system_prompt, simple_tools),
         }],
     });
 
@@ -179,6 +238,7 @@ pub async fn call_computer_use_api(
 
     // Build the chat request
     let request = ChatRequest {
+        response_format: Some(crate::protocol::response_format(coordinate_base, simple_tools)),
         model: model_id.to_string(),
         messages,
         max_tokens: Some(4096),
@@ -191,15 +251,8 @@ pub async fn call_computer_use_api(
     // Make the API request. Racing against the cancel signal lets a Stop press
     // drop the request mid-generation instead of waiting out the inference.
     let endpoint = endpoint(api_endpoint, "chat/completions")?;
-    let request_future = async {
-        let response = client.post(endpoint).json(&request).send().await?;
-
-        decode_response::<ChatResponse>(response).await
-    };
-    let chat_response: ChatResponse = tokio::select! {
-        result = request_future => result?,
-        _ = cancel.cancelled() => return Err(ApiError::Cancelled),
-    };
+    let (chat_response, format_warning) =
+        request_completion(&client, endpoint, request, system_prompt, cancel).await?;
 
     // Parse the response
     let raw_output_text = chat_response
@@ -233,7 +286,11 @@ pub async fn call_computer_use_api(
         .ok_or_else(|| ApiError::ParseError("Empty model response".into()))?;
     let action = match parse_and_validate(choice, &output_text, coordinate_base) {
         Ok(action) => action,
-        Err(error) => return Ok(rejected_response(choice, &output_text, error)),
+        Err(error) => {
+            let mut response = rejected_response(choice, &output_text, error);
+            response.format_warning = format_warning;
+            return Ok(response);
+        }
     };
 
     #[cfg(debug_assertions)]
@@ -294,6 +351,7 @@ pub async fn call_computer_use_api(
     let is_done = action.action == "done";
 
     let response = AgentResponse {
+        format_warning,
         output_text,
         action,
         coordinate_absolute,
@@ -317,7 +375,8 @@ fn parse_and_validate(
     output_text: &str,
     coordinate_base: f64,
 ) -> Result<ActionResult, String> {
-    let action = crate::protocol::parse_response(choice, output_text)?;
+    let mut action = crate::protocol::parse_response(choice, output_text)?;
+    crate::validation::drop_commentary_text(&mut action);
     crate::validation::validate(&action, coordinate_base, true)?;
     Ok(action)
 }
@@ -335,11 +394,13 @@ fn rejected_response(choice: &ChatChoice, output_text: &str, error: String) -> A
         excerpt.push_str("\n[Response excerpt truncated]");
     }
     AgentResponse {
+        format_warning: None,
         output_text: excerpt,
         action: ActionResult {
             action: "none".into(),
             arguments: ActionResultArguments::default(),
             progress: None,
+            report: None,
         },
         coordinate_absolute: None,
         success: false,
@@ -436,6 +497,7 @@ pub async fn refine_coordinate(
         enable_thinking,
         None,
         coordinate_base,
+        false,
         cancel,
     )
     .await
@@ -599,6 +661,166 @@ pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn mock_completions(
+        replies: Vec<(u16, String)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<serde_json::Value>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = vec![];
+            for (status, body) in replies {
+                let (mut stream, _) =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut bytes = vec![];
+                let (header_end, length) = loop {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = bytes.windows(4).position(|s| s == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        break (end + 4, length);
+                    }
+                };
+                while bytes.len() < header_end + length {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                requests
+                    .push(serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap());
+                let response = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (address, server)
+    }
+
+    fn completion(content: &str) -> String {
+        serde_json::json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]})
+            .to_string()
+    }
+
+    async fn synthetic_request(address: &str) -> Result<AgentResponse, ApiError> {
+        call_computer_use_api(
+            address,
+            "test",
+            "",
+            "synthetic screen",
+            100,
+            100,
+            "Return <tool_call>JSON</tool_call>",
+            false,
+            None,
+            1000.0,
+            false,
+            &CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn constrained_request_sends_shared_schema_and_accepts_bare_json() {
+        let (address, server) = mock_completions(vec![(200, completion(r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"progress":{"next_milestone_id":"m1-1","expected_outcome":"Browser opens"}}}"#))]).await;
+        let result = synthetic_request(&address).await.unwrap();
+        assert!(result.success);
+        assert!(result.format_warning.is_none());
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["response_format"],
+            crate::protocol::response_format(1000.0, false)
+        );
+        let prompt = requests[0]["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(!prompt.contains("<tool_call>"));
+        assert!(prompt.contains("no XML tags"));
+    }
+
+    #[tokio::test]
+    async fn unsupported_schema_retries_once_with_original_prompt_and_warns() {
+        let (address, server) = mock_completions(vec![
+            (400, "response_format json_schema is not supported".into()),
+            (
+                200,
+                completion(
+                    r#"<tool_call>{"name":"computer","arguments":{"action":"wait"}}</tool_call>"#,
+                ),
+            ),
+        ])
+        .await;
+        let result = synthetic_request(&address).await.unwrap();
+        assert!(result.success);
+        assert!(result.format_warning.unwrap().contains("does not support"));
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].get("response_format").is_none());
+        assert_eq!(
+            requests[1]["messages"][0]["content"][0]["text"],
+            "Return <tool_call>JSON</tool_call>"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_ignoring_schema_cannot_execute_misplaced_progress() {
+        let (address, server) = mock_completions(vec![(200, completion(r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"next_milestone_id":"m1-1"}}"#))]).await;
+        let result = synthetic_request(&address).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.action.action, "none");
+        assert!(result
+            .error
+            .unwrap()
+            .contains("unknown field `next_milestone_id`"));
+        assert_eq!(server.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn schema_and_unrelated_http_errors_do_not_downgrade() {
+        for (status, error) in [
+            (400, "Invalid schema for response_format"),
+            (400, "response_format: unsupported schema keyword"),
+            (401, "response_format not supported"),
+            (429, "rate limit"),
+            (500, "json_schema unsupported"),
+        ] {
+            let (address, server) = mock_completions(vec![(status, error.into())]).await;
+            let result = synthetic_request(&address).await.unwrap_err().to_string();
+            assert!(result.contains(error), "{result}");
+            assert_eq!(server.await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_format_fallback_is_bounded() {
+        let (address, server) = mock_completions(vec![
+            (
+                422,
+                "response_format: extra inputs are not permitted".into(),
+            ),
+            (
+                422,
+                "response_format: extra inputs are not permitted".into(),
+            ),
+        ])
+        .await;
+        assert!(synthetic_request(&address).await.is_err());
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
     #[tokio::test]
     #[ignore = "Requires a local vision server; synthetic image only, never sends desktop input"]
     async fn local_vision_precision_probe() {
@@ -760,6 +982,7 @@ mod tests {
                 false,
                 None,
                 1000.0,
+                false,
                 &request_cancel,
             )
             .await

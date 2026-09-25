@@ -20,7 +20,7 @@ Build for production with `npm run tauri build`.
 5. Use **Continue task** to resume with a fresh screenshot and the original goal. Restoring a session never restores permission to execute.
 6. Press **Stop**, or **Ctrl+Alt+F12** even while another application has focus, to cancel. Cancellation cannot undo input already delivered to Windows.
 
-Every submitted task plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. There is no separate execution-mode switch. Clearing **Review each action** before starting, or choosing **Allow for this task** during a run, enables direct control until that run ends. New or resumed runs start with reviewed control unless explicitly changed. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
+Every submitted task plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. There is no separate execution-mode switch. **Review each action** is in the main toolbar and in Settings; both control one saved default for new and resumed runs (on by default). Turning it off enables direct control for every run until it is turned back on; a warning stays visible in the main window while it is off. Choosing **Allow for this task** during a reviewed run enables direct control until that run ends. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
 
 Enable **Precision clicks** in the task toolbar to check each click in a magnified crop before submitting input. It is on by default for new settings; previously saved choices are preserved. The crop comes from the same native screenshot as the initial prediction, and targets are identified using the goal, milestone and expected result. Only the corrected click is executed. The crop is not overlaid with a reticle that could distract the model. This helps with small icons but cannot guarantee model accuracy.
 
@@ -54,6 +54,7 @@ Click the intended target before typing or pressing keys. If it changes or becom
 | API endpoint / model ID | Local or explicitly chosen remote vision server |
 | System prompt | Editable instructions; mandatory execution rules are appended |
 | Plan Before Acting | Generate milestones before a new multi-turn task |
+| Simple Tool Format | On by default. Flat tool call for small local models; off selects the full progress/memory protocol |
 | Thinking mode | Show returned reasoning separately; reasoning is never executed or replayed |
 | Screenshot Max Dimension | Resize the primary screen image (256–3840 pixels) |
 | Precision clicks / box mode | Check a magnified crop of the same observation; inconclusive refinement stops execution |
@@ -64,13 +65,23 @@ Coordinates use a 0–1000 grid mapped to the detected primary monitor, includin
 
 ## Model protocol
 
-The final answer must contain exactly one complete computer tool call:
+The client requests schema-constrained JSON through `response_format: {"type":"json_schema", ...}`. The API decoder schema and prompt tool definition share `src/agent/computer-tool.json`. The final answer must contain exactly one computer action:
 
-```xml
-<tool_call>{"name":"computer","arguments":{"action":"left_click","coordinate":[500,400]}}</tool_call>
+```json
+{"name":"computer","arguments":{"action":"left_click","coordinate":[500,400]}}
 ```
 
-One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. The client uses prompt-defined actions rather than requiring tool-schema constrained generation. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Plain text needs user attention and never implies completion.
+If the server explicitly rejects structured output as unsupported (HTTP 400/422), the client retries once with its original prompt and displays a compatibility notice. This fallback also accepts a JSON action wrapped in `<tool_call>...</tool_call>`. Other HTTP errors and invalid model responses do not disable the schema. Server support determines whether generation is constrained; every response still passes local validation before input can be proposed.
+
+One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Rejection messages include the specific validation error and retain the rejected output for inspection. The agent gets two format-correction attempts. A `text` field on an action that does not type (for example a description on a click or key press) is discarded as commentary instead of rejecting the response. Plain text needs user attention and never implies completion; under constrained output use `action: "none"` with `text` for explanations.
+
+With **Simple Tool Format** on (the default), the schema is `src/agent/computer-tool-simple.json`. It has no `progress` object, only three optional flat fields: `screen` (one sentence about the current screenshot), `last_action` (`worked`, `failed` or `unclear`) and `step_done` (the current plan step's success condition is visible). The controller turns these into milestone and outcome records. An omitted `last_action` is recorded as uncertain, so it never blocks the next action. `step_done` completes the current step unless the last action failed. `done` completes the remaining steps, and the controller still confirms completion on a fresh screenshot. Notes and questions are not available in this format.
+
+```json
+{"name":"computer","arguments":{"action":"type","text":"weather Philadelphia","screen":"Chrome address bar is focused","last_action":"worked","step_done":true}}
+```
+
+With the full protocol, progress metadata goes inside `arguments.progress`. In particular, `next_milestone_id` and `expected_outcome` belong alongside `outcome` and `milestones` inside that object, never directly under `arguments`.
 
 | Action | Arguments |
 | --- | --- |
