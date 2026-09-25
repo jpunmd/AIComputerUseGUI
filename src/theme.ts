@@ -1,27 +1,21 @@
 import { useLayoutEffect } from 'react';
-import type { ThemePreference } from './types';
+import type { Theme } from './types';
 
-export const THEME_PREFERENCES: ThemePreference[] = ['system', 'light', 'dark'];
+export const THEMES: Theme[] = ['light', 'dark'];
 
-const darkQuery = () => window.matchMedia?.('(prefers-color-scheme: dark)');
-
-export function applyTheme(preference: ThemePreference) {
-  const dark =
-    preference === 'dark' || (preference === 'system' && !!darkQuery()?.matches);
-  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+// The OS appearance, used only as the first-launch default; after that the
+// user's saved choice wins.
+export function osTheme(): Theme {
+  return typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
 }
 
-// Keeps <html data-theme> in sync with the preference, and with the OS
-// setting while the preference is "system".
-export function useTheme(preference: ThemePreference) {
-  // Layout effect: applied before the first paint, so there's no theme flash.
+// Sets <html data-theme>, which selects the palette in index.css. A layout
+// effect applies it before the first paint, so there's no theme flash.
+export function useTheme(theme: Theme) {
   useLayoutEffect(() => {
-    applyTheme(preference);
-    if (preference !== 'system') return;
-    const query = darkQuery();
-    if (!query) return;
-    const onChange = () => applyTheme('system');
-    query.addEventListener('change', onChange);
-    return () => query.removeEventListener('change', onChange);
-  }, [preference]);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 }

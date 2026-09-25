@@ -125,3 +125,18 @@ describe('standard task workflow', () => {
     expect(screen.getByText('Ctrl+Alt+F12')).toBeDefined();
   });
 });
+
+describe('header toggles', () => {
+  it('switches between light and dark only, saving the choice', () => {
+    mocks.settings = { theme: 'light' };
+    render(<App />);
+    expect(document.documentElement.dataset.theme).toBe('light');
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to dark mode' }));
+    expect(mocks.updateSettings).toHaveBeenCalledWith({ theme: 'dark' });
+  });
+  it('shows and hides the sessions sidebar', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Hide saved sessions' }));
+    expect(mocks.updateSettings).toHaveBeenCalledWith({ showSessions: false });
+  });
+});

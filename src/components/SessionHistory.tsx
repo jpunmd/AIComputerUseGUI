@@ -18,7 +18,7 @@ interface SessionHistoryProps {
   onLoadSession: (messages: Message[], sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, newName: string) => void;
-  onExportSessions: (sessionIds?: string[]) => void;
+  onExportSessions: (sessionIds?: string[]) => Promise<number>; // count saved; 0 if cancelled
   onImportSessions: (file: File) => Promise<number>;
   onClearAllSessions: () => void;
 }
@@ -39,8 +39,9 @@ export function SessionHistory({
 }: SessionHistoryProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [importError, setImportError] = useState<string | null>(null);
-  const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  // Result of the last import or export, shown briefly under the header.
+  const [notice, setNotice] = useState<{ error: boolean; text: string } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout>>();
   const [confirmClear, setConfirmClear] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -62,20 +63,32 @@ export function SessionHistory({
     setEditName('');
   };
 
+  const showNotice = (error: boolean, text: string) => {
+    clearTimeout(noticeTimer.current);
+    setNotice({ error, text });
+    noticeTimer.current = setTimeout(() => setNotice(null), error ? 5000 : 3000);
+  };
+
+  const plural = (count: number) => `${count} session${count !== 1 ? 's' : ''}`;
+
+  const handleExport = async (sessionIds?: string[]) => {
+    try {
+      const count = await onExportSessions(sessionIds);
+      if (count > 0) showNotice(false, `Exported ${plural(count)}`);
+    } catch (err) {
+      showNotice(true, `Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setImportError(null);
-    setImportSuccess(null);
-
     try {
       const count = await onImportSessions(file);
-      setImportSuccess(`Imported ${count} session${count !== 1 ? 's' : ''}`);
-      setTimeout(() => setImportSuccess(null), 3000);
+      showNotice(false, `Imported ${plural(count)}`);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Failed to import');
-      setTimeout(() => setImportError(null), 5000);
+      showNotice(true, err instanceof Error ? err.message : 'Failed to import');
     }
 
     // Reset file input
@@ -131,7 +144,7 @@ export function SessionHistory({
             <Upload className="w-4 h-4" />
           </button>
           <button
-            onClick={() => onExportSessions()}
+            onClick={() => handleExport()}
             disabled={sessions.length === 0}
             className={iconButton}
             title="Export all sessions"
@@ -150,16 +163,16 @@ export function SessionHistory({
       </div>
 
       {/* Import feedback */}
-      {(importError || importSuccess) && (
+      {notice && (
         <div
           className={`mx-3 mb-2 px-3 py-2 rounded-lg border text-xs flex items-start gap-2 ${
-            importError
+            notice.error
               ? 'bg-danger/15 border-danger/40 text-danger'
               : 'bg-success/15 border-success/40 text-success'
           }`}
         >
-          {importError ? <AlertCircle className="w-4 h-4 shrink-0" /> : <Check className="w-4 h-4 shrink-0" />}
-          {importError ?? importSuccess}
+          {notice.error ? <AlertCircle className="w-4 h-4 shrink-0" /> : <Check className="w-4 h-4 shrink-0" />}
+          {notice.text}
         </div>
       )}
 
@@ -244,7 +257,7 @@ export function SessionHistory({
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => onExportSessions([session.id])}
+                          onClick={() => handleExport([session.id])}
                           className={iconButton}
                           title="Export"
                           aria-label={`Export ${session.name}`}

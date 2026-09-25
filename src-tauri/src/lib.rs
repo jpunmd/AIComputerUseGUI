@@ -269,9 +269,43 @@ fn get_screen_size() -> Result<(u32, u32), String> {
     screenshot::get_screen_dimensions().map_err(|e| e.to_string())
 }
 
+/// Saves exported sessions to a file the user picks in a native Save dialog.
+/// The webview can't download files itself, and this keeps file-system access
+/// on the Rust side: the page never gets a path or general write permission.
+/// Returns false if the user cancels.
+#[tauri::command]
+async fn export_sessions(
+    window: tauri::Window,
+    contents: String,
+    file_name: String,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_file_name(&file_name)
+        .add_filter("JSON", &["json"])
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    tokio::fs::write(&path, contents)
+        .await
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Used only from Rust (export_sessions); no dialog permissions are
+        // granted to the webview.
+        .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(RunControl::default()))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -301,7 +335,8 @@ pub fn run() {
             execute_action,
             test_api_connection,
             fetch_available_models,
-            get_screen_size
+            get_screen_size,
+            export_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

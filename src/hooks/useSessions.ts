@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ChatSession, Message, SerializedMessage } from '../types';
 import { MAX_IMPORT_BYTES, parseSessionImport, validateSession } from '../agent/sessions';
 
@@ -221,20 +222,18 @@ export function useSessions() {
   }, [sessions]);
 
   // Export sessions to JSON file
-  const exportSessions = useCallback((sessionIds?: string[]) => {
+  // Export sessions to a JSON file via a native Save dialog. (The webview can't
+  // download blobs.) Resolves to the number exported, or 0 if cancelled.
+  const exportSessions = useCallback(async (sessionIds?: string[]): Promise<number> => {
     const toExport = sessionIds
       ? sessions.filter(s => sessionIds.includes(s.id))
       : sessions;
 
-    const blob = new Blob([JSON.stringify(toExport, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ai-computer-use-sessions-${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const saved = await invoke<boolean>('export_sessions', {
+      contents: JSON.stringify(toExport, null, 2),
+      fileName: `ai-computer-use-sessions-${new Date().toISOString().split('T')[0]}.json`,
+    });
+    return saved ? toExport.length : 0;
   }, [sessions]);
 
   // Import sessions from JSON file

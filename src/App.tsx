@@ -7,7 +7,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Crosshair,
-  Monitor,
   Sun,
   Moon,
 } from 'lucide-react';
@@ -24,15 +23,7 @@ import { useSessions } from './hooks/useSessions';
 import { ActionConfirmation } from './components/ActionConfirmation';
 import { TaskPanel } from './components/TaskPanel';
 import type { ControlMode } from './components/CommandInput';
-import { THEME_PREFERENCES, useTheme } from './theme';
-import type { ThemePreference } from './types';
-
-const THEME_LABELS: Record<ThemePreference, string> = {
-  system: 'System',
-  light: 'Light',
-  dark: 'Dark',
-};
-const THEME_ICONS = { system: Monitor, light: Sun, dark: Moon };
+import { useTheme } from './theme';
 
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -68,7 +59,7 @@ function App() {
   } = useAgent();
 
   useTheme(settings.theme);
-  const ThemeIcon = THEME_ICONS[settings.theme];
+  const nextTheme = settings.theme === 'dark' ? 'light' : 'dark';
 
   // While running, the run's own mode wins: a supervised run becomes direct
   // once the user picks "Allow for this task".
@@ -220,22 +211,18 @@ function App() {
             </button>
           )}
 
-          {/* Theme: cycles System → Light → Dark */}
+          {/* Theme: light/dark toggle; the icon shows the mode it switches to */}
           <button
-            onClick={() =>
-              updateSettings({
-                theme:
-                  THEME_PREFERENCES[
-                    (THEME_PREFERENCES.indexOf(settings.theme) + 1) %
-                      THEME_PREFERENCES.length
-                  ],
-              })
-            }
+            onClick={() => updateSettings({ theme: nextTheme })}
             className="p-2 rounded-lg bg-ink-800 hover:bg-ink-700 text-ink-400 hover:text-ink-50 transition-colors"
-            title={`Theme: ${THEME_LABELS[settings.theme]} (click to change)`}
-            aria-label={`Theme: ${THEME_LABELS[settings.theme]}`}
+            title={`Switch to ${nextTheme} mode`}
+            aria-label={`Switch to ${nextTheme} mode`}
           >
-            <ThemeIcon className="w-5 h-5" />
+            {nextTheme === 'dark' ? (
+              <Moon className="w-5 h-5" />
+            ) : (
+              <Sun className="w-5 h-5" />
+            )}
           </button>
 
           {/* Clear chat */}
@@ -293,11 +280,20 @@ function App() {
 
       {/* Main content */}
       <main className="flex-1 flex overflow-hidden">
-        {/* Saved sessions sidebar */}
-        {settings.showSessions && (
-          <aside
-            aria-label="Saved sessions"
-            className="w-64 shrink-0 border-r border-ink-700 bg-ink-900"
+        {/* Saved sessions sidebar. Stays mounted so it can slide: the width
+            animates while the fixed-width content moves with it. Visibility
+            switches at the end of the close, so a closed sidebar isn't
+            focusable or announced. */}
+        <aside
+          aria-label="Saved sessions"
+          className={`shrink-0 overflow-hidden transition-[width,visibility] duration-200 ease-out motion-reduce:transition-none ${
+            settings.showSessions ? 'w-64 visible' : 'w-0 invisible'
+          }`}
+        >
+          <div
+            className={`w-64 h-full border-r border-ink-700 bg-ink-900 transition-transform duration-200 ease-out motion-reduce:transition-none ${
+              settings.showSessions ? 'translate-x-0' : '-translate-x-full'
+            }`}
           >
             <SessionHistory
               sessions={sessions}
@@ -319,8 +315,8 @@ function App() {
                 setActiveSessionId(null);
               }}
             />
-          </aside>
-        )}
+          </div>
+        </aside>
 
         {/* Chat column */}
         <div className="flex-1 min-w-0 flex flex-col">

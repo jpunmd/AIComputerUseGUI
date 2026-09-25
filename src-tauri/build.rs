@@ -12,6 +12,7 @@ fn main() {
             "test_api_connection",
             "fetch_available_models",
             "get_screen_size",
+            "export_sessions",
         ]),
     ))
     .expect("failed to build application permissions");

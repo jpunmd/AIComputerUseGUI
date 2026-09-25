@@ -58,7 +58,7 @@ describe('sessions sidebar', () => {
     sessions: [session],
     onDeleteSession: vi.fn(),
     onRenameSession: vi.fn(),
-    onExportSessions: vi.fn(),
+    onExportSessions: vi.fn().mockResolvedValue(1),
     onImportSessions: vi.fn(),
     onClearAllSessions: vi.fn(),
   };
@@ -80,5 +80,41 @@ describe('sessions sidebar', () => {
     render(<SessionHistory {...props} disabled onLoadSession={onLoadSession} />);
     const row = screen.getByRole('button', { name: /^Open Notepad/ }) as HTMLButtonElement;
     expect(row.disabled).toBe(true);
+  });
+});
+
+describe('session export', () => {
+  const session: ChatSession = {
+    id: 's1',
+    name: 'Open Notepad',
+    createdAt: at(0).toISOString(),
+    updatedAt: at(0).toISOString(),
+    messages: [],
+  };
+  const props = {
+    sessions: [session],
+    onLoadSession: vi.fn(),
+    onDeleteSession: vi.fn(),
+    onRenameSession: vi.fn(),
+    onImportSessions: vi.fn(),
+    onClearAllSessions: vi.fn(),
+  };
+
+  it('reports how many sessions were saved', async () => {
+    const onExportSessions = vi.fn().mockResolvedValue(1);
+    render(<SessionHistory {...props} onExportSessions={onExportSessions} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Export Open Notepad' }));
+    expect(onExportSessions).toHaveBeenCalledWith(['s1']);
+    expect(await screen.findByText('Exported 1 session')).toBeDefined();
+  });
+
+  it('says nothing when the save dialog is cancelled, and shows failures', async () => {
+    const onExportSessions = vi.fn().mockResolvedValueOnce(0).mockRejectedValueOnce(new Error('disk full'));
+    render(<SessionHistory {...props} onExportSessions={onExportSessions} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Export all sessions' }));
+    await Promise.resolve();
+    expect(screen.queryByText(/Exported/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Export all sessions' }));
+    expect(await screen.findByText('Export failed: disk full')).toBeDefined();
   });
 });
