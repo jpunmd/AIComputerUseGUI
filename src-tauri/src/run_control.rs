@@ -3,7 +3,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub struct Observation {
     pub id: String,
     pub geometry: ScreenGeometry,
+    pub native_image: Arc<image::RgbaImage>,
     pub foreground: Option<WindowTarget>,
     pub windows: Vec<WindowTarget>,
     pub captured_at: Instant,
@@ -88,6 +89,7 @@ impl RunControl {
         &self,
         id: &str,
         geometry: ScreenGeometry,
+        native_image: Arc<image::RgbaImage>,
         foreground: Option<WindowTarget>,
         windows: Vec<WindowTarget>,
     ) -> Result<String, String> {
@@ -100,6 +102,7 @@ impl RunControl {
         run.observation = Some(Observation {
             id: observation_id.clone(),
             geometry,
+            native_image,
             foreground,
             windows,
             captured_at: Instant::now(),
@@ -161,15 +164,23 @@ impl RunControl {
         Ok(proposal)
     }
 
-    pub fn approve(&self, id: &str, proposal_id: &str) -> Result<(), String> {
+    pub fn approve(&self, id: &str, proposal_id: &str, allow_for_task: bool) -> Result<(), String> {
         let mut current = self.run.lock().map_err(|_| "Run state unavailable")?;
-        let pending = current
+        let run = current
             .as_mut()
             .filter(|r| r.id == id && !r.cancel.is_cancelled())
-            .and_then(|r| r.pending.as_mut())
+            .ok_or("Approval expired or run stopped")?;
+        let pending = run
+            .pending
+            .as_mut()
             .filter(|p| p.id == proposal_id && p.created_at.elapsed() < Duration::from_secs(60))
             .ok_or("Approval expired or run stopped")?;
         pending.approved = true;
+        // This permission is set only by the UI for a current proposal. It is
+        // scoped to this run and is never imported from model output/history.
+        if allow_for_task {
+            run.supervised = false;
+        }
         Ok(())
     }
 
@@ -218,6 +229,7 @@ mod tests {
                     x: 0,
                     y: 0,
                 },
+                Arc::new(image::RgbaImage::new(100, 100)),
                 None,
                 vec![],
             )
@@ -234,8 +246,8 @@ mod tests {
         let p = c.prepare(&r, a, o, None).unwrap();
         assert!(p.requires_approval);
         assert!(c.take(&r, &p.id).is_err());
-        assert!(c.approve(&r, "wrong-id").is_err());
-        c.approve(&r, &p.id).unwrap();
+        assert!(c.approve(&r, "wrong-id", false).is_err());
+        c.approve(&r, &p.id, false).unwrap();
         assert!(c.take(&r, &p.id).is_ok());
         assert!(c.take(&r, &p.id).is_err());
     }
@@ -243,12 +255,67 @@ mod tests {
     fn replacing_action_or_observation_revokes_approval() {
         let (c, r, o, a) = setup();
         let p = c.prepare(&r, a.clone(), o.clone(), None).unwrap();
-        c.approve(&r, &p.id).unwrap();
+        c.approve(&r, &p.id, false).unwrap();
         let next = c.prepare(&r, a, o.clone(), None).unwrap();
         assert!(c.take(&r, &p.id).is_err());
         assert!(c.take(&r, &next.id).is_err());
-        c.observe(&r, o.geometry, None, vec![]).unwrap();
-        assert!(c.approve(&r, &next.id).is_err());
+        c.observe(&r, o.geometry, o.native_image, None, vec![])
+            .unwrap();
+        assert!(c.approve(&r, &next.id, false).is_err());
+    }
+    #[test]
+    fn task_permission_requires_a_current_proposal_and_expires_with_the_run() {
+        let (c, r, o, a) = setup();
+        let p = c.prepare(&r, a.clone(), o.clone(), None).unwrap();
+        assert!(c.approve(&r, "wrong-id", true).is_err());
+        let replacement = c.prepare(&r, a.clone(), o.clone(), None).unwrap();
+        assert!(replacement.requires_approval);
+        assert!(c.approve(&r, &p.id, true).is_err());
+        c.approve(&r, &replacement.id, true).unwrap();
+        c.take(&r, &replacement.id).unwrap();
+        let next = c.prepare(&r, a.clone(), o, None).unwrap();
+        assert!(!next.requires_approval);
+        assert!(c.take(&r, &next.id).is_ok());
+        c.stop(Some(&r));
+        assert!(c.approve(&r, &next.id, true).is_err());
+        let new_run = c.begin(true).unwrap();
+        let obs_id = c
+            .observe(
+                &new_run,
+                ScreenGeometry {
+                    id: 1,
+                    width: 100,
+                    height: 100,
+                    x: 0,
+                    y: 0,
+                },
+                Arc::new(image::RgbaImage::new(100, 100)),
+                None,
+                vec![],
+            )
+            .unwrap();
+        let fresh = c.observation(&new_run, &obs_id).unwrap();
+        assert!(
+            c.prepare(&new_run, a, fresh, None)
+                .unwrap()
+                .requires_approval
+        );
+    }
+    #[test]
+    fn expired_proposal_cannot_enable_task_permission() {
+        let (c, r, o, a) = setup();
+        let p = c.prepare(&r, a.clone(), o.clone(), None).unwrap();
+        c.run
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .created_at = Instant::now() - Duration::from_secs(61);
+        assert!(c.approve(&r, &p.id, true).is_err());
+        assert!(c.prepare(&r, a, o, None).unwrap().requires_approval);
     }
     #[test]
     fn stop_cancels_before_and_during_requests_and_invalidates_actions() {
@@ -258,7 +325,7 @@ mod tests {
         c.stop(Some(&r));
         assert!(token.is_cancelled());
         assert!(c.token(&r).is_err());
-        assert!(c.approve(&r, &p.id).is_err());
+        assert!(c.approve(&r, &p.id, true).is_err());
         let new_run = c.begin(true).unwrap();
         c.stop(Some(&r)); // Delayed cleanup from an old task cannot stop the new one.
         assert!(!c.token(&new_run).unwrap().is_cancelled());

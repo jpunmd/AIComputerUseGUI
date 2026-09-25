@@ -1,4 +1,5 @@
 use crate::{
+    control_error::ControlError,
     screenshot::ScreenGeometry,
     types::ActionResult,
     validation,
@@ -15,6 +16,8 @@ pub enum ActionError {
     ExecutionError(String),
     #[error("Invalid action: {0}")]
     InvalidAction(String),
+    #[error("{0}")]
+    TargetChanged(#[from] ControlError),
     #[error("Run stopped")]
     Cancelled,
 }
@@ -75,7 +78,7 @@ pub fn execute_action(
             "No external target window; click the target application first".into(),
         )
     })?;
-    let guard = |focus| window_guard::verify(target, focus).map_err(ActionError::InvalidAction);
+    let guard = |focus| window_guard::verify(target, focus).map_err(ActionError::TargetChanged);
     guard(matches!(action.action.as_str(), "type" | "key"))?;
     let point = |p: &[f64]| {
         (
@@ -84,11 +87,9 @@ pub fn execute_action(
         )
     };
     let at_point = |x, y| -> Result<(), ActionError> {
-        let current = window_guard::at_point(x, y).map_err(ActionError::InvalidAction)?;
+        let current = window_guard::at_point(x, y)?;
         if &current != target {
-            return Err(ActionError::InvalidAction(
-                "Click target changed; capture again".into(),
-            ));
+            return Err(ControlError::screen_changed("Click target changed; capture again").into());
         }
         Ok(())
     };
@@ -136,7 +137,7 @@ pub fn execute_action(
                     .ok_or_else(|| ActionError::InvalidAction("Missing drag end".into()))?,
             );
             at_point(sx, sy)?;
-            window_guard::at_point(ex, ey).map_err(ActionError::InvalidAction)?;
+            window_guard::at_point(ex, ey)?;
             enigo
                 .move_mouse(sx, sy, Coordinate::Abs)
                 .map_err(input_err)?;
@@ -147,7 +148,7 @@ pub fn execute_action(
                 .map_err(input_err)?;
             let result = (|| {
                 wait(50, cancel)?;
-                window_guard::at_point(ex, ey).map_err(ActionError::InvalidAction)?;
+                window_guard::at_point(ex, ey)?;
                 enigo
                     .move_mouse(ex, ey, Coordinate::Abs)
                     .map_err(input_err)?;

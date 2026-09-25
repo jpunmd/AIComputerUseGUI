@@ -15,6 +15,8 @@ export interface Settings {
   boxRefine: boolean; // Model returns a bounding box of the target; we click its center. Applies to the final grounding pass (pass 2 when zoomRefine is on, pass 1 otherwise)
   debugMode: boolean; // Show developer instruments (the calibration probe in the expanded screenshot view)
   saveScreenshotsInSessions: boolean; // Include screenshots/zoom crops when saving sessions; off = text-only sessions (tiny storage)
+  reviewEachAction: boolean; // Default for new runs: ask before each mouse/keyboard action (off = direct control)
+  simpleToolFormat: boolean; // Flat tool call (screen/last_action/step_done) instead of the nested progress object; easier for small models
 }
 
 export interface Coordinate {
@@ -22,8 +24,17 @@ export interface Coordinate {
   y: number;
 }
 
+// Simple tool format: flat observations the controller turns into TaskProgress.
+export interface StepReport {
+  screen?: string;
+  last_action?: 'worked' | 'failed' | 'unclear';
+  step_done?: boolean;
+}
+
 export interface ActionResult {
   action: string;
+  progress?: TaskProgress;
+  report?: StepReport;
   arguments: {
     coordinate?: number[];
     text?: string;
@@ -36,6 +47,7 @@ export interface ActionResult {
 }
 
 export interface AgentResponse {
+  format_warning?: string;
   output_text: string;
   action: ActionResult;
   coordinate_absolute?: Coordinate;
@@ -46,6 +58,7 @@ export interface AgentResponse {
 }
 
 export interface Message {
+  modelResponse?: string; // Rejected model output for diagnosis only; never an action.
   task?: TaskRecord;
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -63,6 +76,7 @@ export interface Message {
 
 // Serializable version of Message for storage (Date as ISO string)
 export interface SerializedMessage {
+  modelResponse?: string;
   task?: TaskRecord;
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -107,8 +121,73 @@ export interface AppState {
 }
 
 export interface TaskRecord {
+  schemaVersion: 2;
   goal: string;
-  plan: string[];
+  plan: Milestone[];
   status: 'planning' | 'running' | 'stopped' | 'completed' | 'needs_user';
   summary: string;
+  notes: MemoryNote[];
+  receipts: ExecutionReceipt[];
+  planChanges: { revision: number; reason: string; step: number }[];
+  revision: number;
+  lastStep: number;
+  omittedNotes: number;
+}
+
+export type MilestoneStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'blocked';
+export interface Evidence {
+  text: string;
+  step: number;
+  observationId: string;
+  source: 'model_observation' | 'controller' | 'legacy';
+}
+export interface Milestone {
+  id: string;
+  title: string;
+  successCriteria: string;
+  status: MilestoneStatus;
+  attempts: number;
+  evidence?: Evidence;
+}
+export type NoteKind = 'fact' | 'artifact' | 'failure' | 'question';
+export interface MemoryNote {
+  id: string;
+  kind: NoteKind;
+  text: string;
+  evidence: Evidence;
+}
+export interface ExecutionReceipt {
+  step: number;
+  observationId: string;
+  milestoneId?: string;
+  action: string;
+  expected: string;
+  outcome: 'unverified' | 'succeeded' | 'failed' | 'uncertain';
+  evidence?: Evidence;
+}
+
+// Untrusted model metadata. It never contains executor authorization.
+export interface TaskProgress {
+  milestones?: {
+    id: string;
+    status: Exclude<MilestoneStatus, 'pending'>;
+    evidence: string;
+  }[];
+  outcome?: {
+    status: 'succeeded' | 'failed' | 'uncertain';
+    evidence: string;
+  };
+  notes?: {
+    id?: string;
+    kind: NoteKind;
+    text: string;
+    evidence?: string;
+  }[];
+  resolve_questions?: { id: string; answer: string; evidence: string }[];
+  next_milestone_id?: string;
+  expected_outcome?: string;
 }

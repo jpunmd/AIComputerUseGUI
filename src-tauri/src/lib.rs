@@ -1,5 +1,6 @@
 mod actions;
 mod api;
+mod control_error;
 mod protocol;
 mod run_control;
 mod screenshot;
@@ -8,6 +9,7 @@ mod validation;
 mod window_guard;
 
 use crate::{
+    control_error::ControlError,
     run_control::{Proposal, RunControl},
     types::{ActionResult, AgentResponse},
 };
@@ -54,7 +56,13 @@ async fn capture_screenshot_with_metadata(
     if token.is_cancelled() {
         return Err("Run stopped".into());
     }
-    let observation_id = state.observe(&run_id, result.geometry, foreground, windows)?;
+    let observation_id = state.observe(
+        &run_id,
+        result.geometry,
+        result.native_image,
+        foreground,
+        windows,
+    )?;
     Ok(ScreenshotWithMetadata {
         base64_image: result.base64_image,
         image_width: result.image_width,
@@ -78,6 +86,7 @@ async fn process_computer_use(
     system_prompt: String,
     enable_thinking: Option<bool>,
     prior_turns: Option<Vec<types::PriorTurn>>,
+    simple_tools: Option<bool>,
     state: Control<'_>,
 ) -> Result<AgentResponse, String> {
     let token = state.token(&run_id)?;
@@ -92,6 +101,7 @@ async fn process_computer_use(
         enable_thinking.unwrap_or(false),
         prior_turns,
         1000.0,
+        simple_tools.unwrap_or(false),
         &token,
     )
     .await
@@ -102,6 +112,7 @@ async fn process_computer_use(
 #[allow(clippy::too_many_arguments)]
 async fn refine_coordinate(
     run_id: String,
+    observation_id: String,
     api_endpoint: String,
     model_id: String,
     coarse_x: f64,
@@ -115,7 +126,9 @@ async fn refine_coordinate(
     state: Control<'_>,
 ) -> Result<api::RefineResult, String> {
     let token = state.token(&run_id)?;
+    let observation = state.observation(&run_id, &observation_id)?;
     api::refine_coordinate(
+        &observation.native_image,
         &api_endpoint,
         &model_id,
         coarse_x,
@@ -123,7 +136,7 @@ async fn refine_coordinate(
         &action_type,
         &query,
         crop_fraction.unwrap_or(0.3),
-        max_dimension.unwrap_or(1280),
+        max_dimension.unwrap_or(1920),
         1000.0,
         enable_thinking.unwrap_or(false),
         box_mode.unwrap_or(false),
@@ -139,17 +152,22 @@ fn prepare_action(
     observation_id: String,
     action: String,
     state: Control<'_>,
-) -> Result<Proposal, String> {
+) -> Result<Proposal, ControlError> {
     if action.len() > 32768 {
         return Err("Action payload is too large".into());
     }
     let action: ActionResult =
         serde_json::from_str(&action).map_err(|_| "Invalid action payload")?;
+    if action.progress.is_some() {
+        return Err("Task progress cannot be submitted to the input executor".into());
+    }
     validation::validate(&action, 1000.0, false)?;
     actions::validate_keys(&action).map_err(|e| e.to_string())?;
     let observation = state.observation(&run_id, &observation_id)?;
     if screenshot::get_screen_geometry().map_err(|e| e.to_string())? != observation.geometry {
-        return Err("Display changed; capture again".into());
+        return Err(ControlError::screen_changed(
+            "Display changed; capture again",
+        ));
     }
     let target = if let Some(p) = action
         .arguments
@@ -184,12 +202,19 @@ fn prepare_action(
     if let Some(target) = &target {
         window_guard::require_captured(&observation.windows, target)?;
     }
-    state.prepare(&run_id, action, observation, target)
+    state
+        .prepare(&run_id, action, observation, target)
+        .map_err(Into::into)
 }
 
 #[tauri::command]
-fn approve_action(run_id: String, proposal_id: String, state: Control<'_>) -> Result<(), String> {
-    state.approve(&run_id, &proposal_id)
+fn approve_action(
+    run_id: String,
+    proposal_id: String,
+    allow_for_task: Option<bool>,
+    state: Control<'_>,
+) -> Result<(), String> {
+    state.approve(&run_id, &proposal_id, allow_for_task.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -197,7 +222,7 @@ async fn execute_action(
     run_id: String,
     proposal_id: String,
     state: Control<'_>,
-) -> Result<(), String> {
+) -> Result<(), ControlError> {
     let control = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _serial = control
@@ -208,7 +233,9 @@ async fn execute_action(
         if screenshot::get_screen_geometry().map_err(|e| e.to_string())?
             != proposal.observation.geometry
         {
-            return Err("Display changed; capture again".into());
+            return Err(ControlError::screen_changed(
+                "Display changed; capture again",
+            ));
         }
         actions::execute_action(
             &proposal.action,
@@ -216,7 +243,10 @@ async fn execute_action(
             proposal.target.as_ref(),
             &token,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| match e {
+            actions::ActionError::TargetChanged(error) => error.after_input_attempt(),
+            other => ControlError::from(other.to_string()),
+        })
     })
     .await
     .map_err(|e| e.to_string())?

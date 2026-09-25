@@ -1,3 +1,4 @@
+import { TOOL_DEFINITION } from '../agent/protocol';
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
 
@@ -5,10 +6,8 @@ export const DEFAULT_SYSTEM_PROMPT = `You are a desktop control agent. Your sole
 
 Your front end is a GUI application called "AI Computer Use Agent" — this is the chat window the user types into and watches your actions through. Do NOT click, type into, or otherwise interact with this window. If you see it on screen, treat it as off-limits and work around it (switch to the target window, minimize the agent window if needed, etc.). The agent window typically shows a chat history, a command input box, screenshots, and a Settings/gear icon — never click these.
 
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{"type": "function", "function": {"name": "computer", "description": "Use a mouse and keyboard to interact with a computer screen.", "parameters": {"properties": {"action": {"description": "The action to perform.", "enum": ["click", "left_click", "right_click", "double_click", "left_click_drag", "scroll", "type", "key", "wait", "screenshot", "done", "confirm", "plan"], "type": "string"}, "coordinate": {"description": "The x,y coordinate in 0-1000 normalized space. (0,0) is top-left, (1000,1000) is bottom-right.", "items": {"type": "number"}, "type": "array"}, "text": {"description": "For 'type' action, or for 'confirm' action to describe what needs confirmation.", "type": "string"}, "key": {"description": "For 'key' action.", "type": "string"}, "start_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "end_coordinate": {"description": "For left_click_drag. Use 0-1000 normalized coordinates.", "items": {"type": "number"}, "type": "array"}, "direction": {"description": "For scroll: up/down/left/right.", "enum": ["up", "down", "left", "right"], "type": "string"}, "amount": {"description": "For scroll.", "type": "number"}}, "required": ["action"], "type": "object"}}}
-</tools>
+Current computer tool definition:
+${TOOL_DEFINITION}
 
 # Coordinate System
 - Use NORMALIZED coordinates from 0 to 1000
@@ -53,15 +52,17 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   actionDelayMs: 1000, // Delay after action before next screenshot (ms)
   maxTurns: 20, // Maximum number of turns before stopping
-  screenshotMaxDimension: 1280, // Max screenshot dimension (lower = fewer tokens, less detail)
+  screenshotMaxDimension: 1920, // Longest side sent to the model; 1920 = 1080p (a 4K screen downscales exactly 2:1)
   enableThinking: true, // Thinking mode on by default (Qwen3-VL thinking models)
-  expandThinkingByDefault: false, // Thinking blocks collapsed by default; user clicks to expand
+  expandThinkingByDefault: true, // Show the model's reasoning expanded by default
   enablePlanning: true,
-  zoomRefine: false, // Off by default; two-pass adds a second API call per click
+  zoomRefine: false, // Precision clicks: opt-in magnified-crop check before each click (an extra model call per click).
   zoomCropFraction: 0.3, // Zoom window = 30% of the screen, centered on the coarse prediction
   boxRefine: false, // Off by default: clicks target a predicted point; on: the model boxes the target and we click the box center (works with or without zoomRefine)
   debugMode: false, // Developer instruments (calibration probe) hidden by default
   saveScreenshotsInSessions: false, // Opt in to persisting desktop images.
+  reviewEachAction: true, // Ask before each mouse/keyboard action unless the user saves direct control as the default.
+  simpleToolFormat: true, // Flat tool call that small local models follow reliably; off = full progress/memory protocol.
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';
@@ -114,7 +115,7 @@ export function sanitizeSettings(value: unknown): Settings {
   const bounded=(n:number,min:number,max:number,fallback:number)=>Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback;
   result.maxTurns=Math.round(bounded(result.maxTurns,1,100,20));
   result.actionDelayMs=bounded(result.actionDelayMs,0,10000,1000);
-  result.screenshotMaxDimension=Math.round(bounded(result.screenshotMaxDimension,256,3840,1280));
+  result.screenshotMaxDimension=Math.round(bounded(result.screenshotMaxDimension,256,3840,1920));
   result.zoomCropFraction=bounded(result.zoomCropFraction,0.05,1,0.3);
   return result;
 }

@@ -36,6 +36,8 @@ pub struct ActionArguments {
     /// The action type: click, left_click, right_click, double_click, type, key, scroll, etc.
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<TaskProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinate: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -51,6 +53,33 @@ pub struct ActionArguments {
     pub amount: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub button: Option<String>,
+    // Simple tool format: flat observations the controller turns into task progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<LastAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_done: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LastAction {
+    Worked,
+    Failed,
+    Unclear,
+}
+
+/// Simple-format report. Model-authored memory, never an input capability.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StepReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<LastAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_done: Option<bool>,
 }
 
 /// Tool call result from the model
@@ -68,6 +97,81 @@ pub struct ToolCall {
 pub struct ActionResult {
     pub action: String,
     pub arguments: ActionResultArguments,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<TaskProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<StepReport>,
+}
+
+/// Model-authored working memory, not an input capability or an approval.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskProgress {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub milestones: Option<Vec<MilestoneUpdate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<OutcomeUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Vec<NoteUpdate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolve_questions: Option<Vec<QuestionResolution>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_milestone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_outcome: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MilestoneUpdate {
+    pub id: String,
+    pub status: MilestoneStatus,
+    pub evidence: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MilestoneStatus {
+    InProgress,
+    Completed,
+    Blocked,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeUpdate {
+    pub status: OutcomeStatus,
+    pub evidence: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeStatus {
+    Succeeded,
+    Failed,
+    Uncertain,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NoteUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub kind: NoteKind,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteKind {
+    Fact,
+    Artifact,
+    Failure,
+    Question,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionResolution {
+    pub id: String,
+    pub answer: String,
+    pub evidence: String,
 }
 
 /// Flattened action arguments for ActionResult
@@ -92,8 +196,15 @@ pub struct ActionResultArguments {
 
 impl From<ToolCall> for ActionResult {
     fn from(tool_call: ToolCall) -> Self {
+        let report = StepReport {
+            screen: tool_call.arguments.screen,
+            last_action: tool_call.arguments.last_action,
+            step_done: tool_call.arguments.step_done,
+        };
         ActionResult {
             action: tool_call.arguments.action,
+            progress: tool_call.arguments.progress,
+            report: (report != StepReport::default()).then_some(report),
             arguments: ActionResultArguments {
                 coordinate: tool_call.arguments.coordinate,
                 text: tool_call.arguments.text,
@@ -110,6 +221,8 @@ impl From<ToolCall> for ActionResult {
 /// Response from the agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format_warning: Option<String>,
     pub output_text: String,
     pub action: ActionResult,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,6 +286,8 @@ pub struct PriorTurn {
 /// OpenAI-compatible chat request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
     pub model: String,
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]

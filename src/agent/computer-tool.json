@@ -1,0 +1,233 @@
+{
+  "type": "function",
+  "function": {
+    "name": "computer",
+    "description": "Propose one computer action and optionally report observations from the current screen.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "click",
+            "left_click",
+            "right_click",
+            "double_click",
+            "left_click_drag",
+            "scroll",
+            "type",
+            "key",
+            "wait",
+            "screenshot",
+            "none",
+            "done",
+            "confirm",
+            "plan"
+          ]
+        },
+        "coordinate": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "description": "Normalized [x,y]; use four values only when bounding-box targeting is requested."
+        },
+        "start_coordinate": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "end_coordinate": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192,
+          "description": "Text to type, answer/evidence for done/none/confirm, or a JSON-encoded plan string for plan. Omit on clicks and key presses."
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "One key chord as a string, e.g. ctrl+l. Never an array."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "progress": {
+          "type": "object",
+          "properties": {
+            "milestones": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "in_progress",
+                      "completed",
+                      "blocked"
+                    ]
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "id",
+                  "status",
+                  "evidence"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 7
+            },
+            "outcome": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "succeeded",
+                    "failed",
+                    "uncertain"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            "notes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "fact",
+                      "artifact",
+                      "failure",
+                      "question"
+                    ]
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 6
+            },
+            "resolve_questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "answer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "id",
+                  "answer",
+                  "evidence"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 6
+            },
+            "next_milestone_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "expected_outcome": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

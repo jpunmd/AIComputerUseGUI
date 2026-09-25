@@ -168,6 +168,41 @@ export function SettingsPanel({
             )}
           </div>
 
+          {/* Review each action (saved default for new runs) */}
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <label
+                id="review-each-action-label"
+                className="block text-sm font-medium text-dark-300"
+              >
+                Review Each Action
+              </label>
+              <p className="text-xs text-dark-500">
+                Ask for approval before every mouse or keyboard action. Turn off to let tasks control the computer directly. Saved as the default and applied when the next task starts.
+              </p>
+              {!settings.reviewEachAction && (
+                <p className="text-xs text-amber-400 mt-1">
+                  Direct control: actions will run without review.
+                </p>
+              )}
+            </div>
+            <button
+              role="switch"
+              aria-checked={settings.reviewEachAction}
+              aria-labelledby="review-each-action-label"
+              onClick={() => onUpdateSettings({ reviewEachAction: !settings.reviewEachAction })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                settings.reviewEachAction ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.reviewEachAction ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* System Prompt */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -284,7 +319,7 @@ export function SettingsPanel({
             </button>
           </div>
 
-          {/* Auto-approve confirmations */}
+          {/* Task planning */}
           <div className="flex items-center justify-between">
             <div>
               <label className="block text-sm font-medium text-dark-300">
@@ -308,6 +343,36 @@ export function SettingsPanel({
             </button>
           </div>
 
+          {/* Simple tool format */}
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <label
+                id="simple-tool-format-label"
+                className="block text-sm font-medium text-dark-300"
+              >
+                Simple Tool Format
+              </label>
+              <p className="text-xs text-dark-500">
+                Flat tool call that small local models follow reliably; the app tracks plan steps itself. Turn off for the full progress and memory protocol (for larger models).
+              </p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={settings.simpleToolFormat}
+              aria-labelledby="simple-tool-format-label"
+              onClick={() => onUpdateSettings({ simpleToolFormat: !settings.simpleToolFormat })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                settings.simpleToolFormat ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.simpleToolFormat ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Screenshot Resolution */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-dark-300">
@@ -320,13 +385,13 @@ export function SettingsPanel({
             >
               <option value={768}>768px (Low - fastest, fewer tokens)</option>
               <option value={1024}>1024px (Medium-Low)</option>
-              <option value={1280}>1280px (Medium - recommended)</option>
-              <option value={1920}>1920px (High - 1080p equivalent)</option>
+              <option value={1280}>1280px (Medium)</option>
+              <option value={1920}>1920px (1080p - recommended)</option>
               <option value={2560}>2560px (Very High - 1440p equivalent)</option>
               <option value={3840}>3840px (Ultra - 4K, most tokens)</option>
             </select>
             <p className="text-xs text-dark-500">
-              Maximum width/height for screenshots sent to the model. Lower values use fewer tokens but may lose detail.
+              Longest side of the screenshot sent to the model. Clicks map to the full screen at any setting. 1080p suits most displays; a 4K screen is downscaled exactly 2:1. Lower values use fewer tokens but lose detail.
             </p>
           </div>
 
@@ -358,10 +423,10 @@ export function SettingsPanel({
           <div className="flex items-center justify-between">
             <div className="pr-4">
               <label className="block text-sm font-medium text-dark-300">
-                Zoom Refine (two-pass)
+                Precision Clicks
               </label>
               <p className="text-xs text-dark-500">
-                After the first prediction, re-capture a magnified crop around it and click again for sub-patch precision. Adds one API call per click.
+                Check the intended target in a magnified view of the same screenshot before clicking. Adds one model request; only one click is sent.
               </p>
             </div>
             <button

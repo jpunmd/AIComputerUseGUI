@@ -2,6 +2,15 @@
 
 A Windows Tauri application that lets a local vision-language model propose and execute mouse and keyboard actions. It connects to an OpenAI-compatible `/v1/chat/completions` server. Use a model that accepts images and follows the computer-action format in Settings; text-only models cannot ground clicks from screenshots.
 
+## Recommended models
+
+| Model | Notes |
+| --- | --- |
+| **Qwen 3.8** (e.g. 27B) | Main development model, served locally by llama.cpp |
+| **Qwen 3.8 Flash-Next** | Faster option for the same workflow |
+
+Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint, and enter the exact model ID the server reports. Keep **Simple Tool Format** on (the default) for these and other local models: it asks for a flat tool call that they follow far more reliably than the full progress protocol. Thinking mode is on by default and its reasoning is shown expanded.
+
 ## Getting started
 
 Requirements: Windows, Node.js 22.13+ (or 24 LTS), stable Rust, Microsoft C++ build tools, and WebView2. See [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/).
@@ -16,20 +25,26 @@ Build for production with `npm run tauri build`.
 1. Start your local vision model server. In Settings, enter its API base URL (such as `http://localhost:8000/v1`) and the exact model ID exposed by that server.
 2. Test the connection. Put the target application on the **primary monitor** and keep its controls visible beside this controller.
 3. Enter a task with clear completion criteria. Planning is enabled by default. Select **Plan only** to inspect milestones before any input executes.
-4. Leave **Review each action** enabled. Approve or deny proposed mouse/keyboard actions. Each approval applies to one exact action and expires after 60 seconds.
+4. With **Review each action** enabled, choose **Allow once** for one action or **Allow for this task** to let the remaining mouse/keyboard actions run automatically. The dialog previews the proposed click. An unanswered proposal expires after 60 seconds.
 5. Use **Continue task** to resume with a fresh screenshot and the original goal. Restoring a session never restores permission to execute.
 6. Press **Stop**, or **Ctrl+Alt+F12** even while another application has focus, to cancel. Cancellation cannot undo input already delivered to Windows.
 
-Single-turn mode proposes one action for manual execution. Multi-turn mode plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. Clearing **Review each action** enables direct control for that run; it resets to reviewed control afterwards.
+Every submitted task plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. There is no separate execution-mode switch. **Review each action** is in the main toolbar and in Settings; both control one saved default for new and resumed runs (on by default). Turning it off enables direct control for every run until it is turned back on; a warning stays visible in the main window while it is off. Choosing **Allow for this task** during a reviewed run enables direct control until that run ends. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
+
+Enable **Precision clicks** in the task toolbar to check each click in a magnified crop before submitting input. It is off by default because it adds a second model call to every click; turn it on if clicks miss small targets. The crop comes from the same native screenshot as the initial prediction, and targets are identified using the goal, milestone and expected result. Only the corrected click is executed. The crop is not overlaid with a reticle that could distract the model. This helps with small icons but cannot guarantee model accuracy.
 
 ## Staying on task
 
-- The original goal and up to seven plan milestones stay in every multi-turn request.
-- Model context contains at most six recent text turns, bounded to 24,000 JavaScript string characters, plus the pinned goal, plan, and ten bounded execution receipts. Only the current screenshot is sent.
-- Receipts record input submitted to Windows, **not verified success**. Old turns are omitted whole, and the model is told to ask for missing details. This is deterministic context compaction, not a semantic summary of all earlier facts.
-- Follow-up questions retain recent context. Clear chat resets it. Saved checkpoints retain the goal, plan, and receipts; resuming always re-observes the desktop.
-- Three identical consecutive action/screenshot pairs stop before the third execution. Turn/time limits also bound runs when animations or cursor changes defeat exact-image matching.
-- A `done` action needs completion evidence. Multi-turn completion requires a second `done` decision against a new screen. This is model judgment, not independent proof of success.
+- The original goal and up to seven milestones stay in every multi-turn request. Each milestone has a stable ID, observable success condition, status (pending, in progress, completed, or blocked), input count, and evidence from a numbered screen observation.
+- The model supplies compact progress updates alongside its next action, using the same inference request. Input receipts remain unverified until a later observation reports success, failure, or uncertainty. The controller requires that review before another input action.
+- Durable memory keeps model-extracted facts, exact paths/values, failed approaches, and open questions. Each note records its evidence and source step. Known notes can be updated and answered questions resolved by ID. New tasks clear this memory; Continue and saved checkpoints retain it.
+- Memory is bounded to 16 notes / 8,000 text-and-evidence characters, eight input receipts, and five plan revisions. Paths and unresolved questions receive priority during compaction. The task prompt is capped at 32,000 JavaScript string characters, preserving the original goal, plan, current request, and latest receipt. At most six recent conversation turns / 24,000 characters are supplied separately. Only the current screenshot is sent.
+- Two reported failures on the same milestone, or three identical consecutive action/screenshot pairs, trigger one plan revision before further input. A revision must explain the changed approach and preserve completed milestones. Continued lack of progress pauses the run. Turn/time limits still apply.
+- When a window, focus, or display change invalidates a proposed action, the agent waits briefly, takes a new screenshot, and chooses a new action automatically. It can recover from Task View or a window switch without losing its goal or task permission. Possible partial input is reviewed before further input; stale coordinates are never replayed. Recovery allows three consecutive retries and six total per run before pausing. **Allow once** still applies only to its original proposal.
+- A `done` claim cannot complete a task with unfinished milestones, open questions, or unreviewed input. Once those are resolved, completion requires a second `done` decision against a new screen. This is model judgment, not independent proof of success.
+- The expandable task panel shows milestone statuses, success conditions, evidence, durable notes, and recent input results. Legacy text-only plans load as pending milestones; old execution summaries are treated as unverified history.
+
+See [task progress and memory protocol](docs/task-memory.md) for examples, migration behavior, and limits.
 
 ## Control and privacy
 
@@ -48,23 +63,44 @@ Click the intended target before typing or pressing keys. If it changes or becom
 | API endpoint / model ID | Local or explicitly chosen remote vision server |
 | System prompt | Editable instructions; mandatory execution rules are appended |
 | Plan Before Acting | Generate milestones before a new multi-turn task |
-| Thinking mode | Show returned reasoning separately; reasoning is never executed or replayed |
-| Screenshot Max Dimension | Resize the primary screen image (256–3840 pixels) |
-| Zoom Refine / box mode | Optional second targeting pass; inconclusive refinement stops execution |
+| Simple Tool Format | On by default. Flat tool call for small local models; off selects the full progress/memory protocol |
+| Thinking mode | On by default, shown expanded. Reasoning is displayed separately and never executed or replayed |
+| Screenshot Max Dimension | Longest side of the image sent to the model (256–3840 pixels). Default and recommended: 1920 (1080p) |
+| Precision clicks / box mode | Off by default. Check a magnified crop of the same observation; inconclusive refinement stops execution |
 | Action Delay / Max Turns | Allow UI changes and bound the loop |
 | Save Screenshots in Sessions | Include images in saved/exported history; off by default |
 
+New defaults apply to fresh installs and to **Reset to Defaults** in Settings; previously saved settings keep their values.
+
 Coordinates use a 0–1000 grid mapped to the detected primary monitor, including its desktop offset.
+
+### Screen resolution and 4K monitors
+
+The recommended screenshot size is **1080p** (Screenshot Max Dimension 1920). The screen is captured at full native resolution and then downscaled so its longest side is 1920 pixels. A 4K (3840×2160) monitor becomes exactly 1920×1080, a clean 2:1 reduction.
+
+Downscaling does not affect where clicks land. The model answers in the 0–1000 grid, and the app maps that grid onto the monitor's full pixel area. The screenshot and the click mapping use the same monitor geometry, and a capture whose size does not match it is refused rather than risking a misplaced click. Windows display scaling therefore does not shift clicks.
+
+What 4K changes is detail. With Windows scaling at 150–200% (typical for 4K), text and icons stay readable at 1080p. At 100% scaling, UI elements become about half their usual size in the screenshot. If small targets are missed, raise the setting to 2560 (more tokens, slower) or enable **Precision clicks**, which re-checks each click on a crop taken from the full-resolution capture.
 
 ## Model protocol
 
-The final answer must contain exactly one complete computer tool call:
+The client requests schema-constrained JSON through `response_format: {"type":"json_schema", ...}`. The API decoder schema and prompt tool definition share `src/agent/computer-tool.json`. The final answer must contain exactly one computer action:
 
-```xml
-<tool_call>{"name":"computer","arguments":{"action":"left_click","coordinate":[500,400]}}</tool_call>
+```json
+{"name":"computer","arguments":{"action":"left_click","coordinate":[500,400]}}
 ```
 
-One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. The client uses prompt-defined actions rather than requiring tool-schema constrained generation. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Plain text needs user attention and never implies completion.
+If the server explicitly rejects structured output as unsupported (HTTP 400/422), the client retries once with its original prompt and displays a compatibility notice. This fallback also accepts a JSON action wrapped in `<tool_call>...</tool_call>`. Other HTTP errors and invalid model responses do not disable the schema. Server support determines whether generation is constrained; every response still passes local validation before input can be proposed.
+
+One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Rejection messages include the specific validation error and retain the rejected output for inspection. The agent gets two format-correction attempts. A `text` field on an action that does not type (for example a description on a click or key press) is discarded as commentary instead of rejecting the response. Plain text needs user attention and never implies completion; under constrained output use `action: "none"` with `text` for explanations.
+
+With **Simple Tool Format** on (the default), the schema is `src/agent/computer-tool-simple.json`. It has no `progress` object, only three optional flat fields: `screen` (one sentence about the current screenshot), `last_action` (`worked`, `failed` or `unclear`) and `step_done` (the current plan step's success condition is visible). The controller turns these into milestone and outcome records. An omitted `last_action` is recorded as uncertain, so it never blocks the next action. `step_done` completes the current step unless the last action failed. `done` completes the remaining steps, and the controller still confirms completion on a fresh screenshot. Notes and questions are not available in this format.
+
+```json
+{"name":"computer","arguments":{"action":"type","text":"weather Philadelphia","screen":"Chrome address bar is focused","last_action":"worked","step_done":true}}
+```
+
+With the full protocol, progress metadata goes inside `arguments.progress`. In particular, `next_milestone_id` and `expected_outcome` belong alongside `outcome` and `milestones` inside that object, never directly under `arguments`.
 
 | Action | Arguments |
 | --- | --- |
@@ -74,7 +110,7 @@ One OpenAI-style `message.tool_calls` function result named `computer` is also a
 | `type` | `text` (up to 8 KiB UTF-8) |
 | `key` | `key`, such as `ctrl+s` |
 | `wait`, `screenshot` | No arguments |
-| `plan` | `text`: one to seven newline-separated milestones |
+| `plan` | `text`: JSON containing `steps` with `title` and `success_criteria`; revised plans also require `reason` and retained milestone IDs. Legacy newline plans remain accepted. |
 | `confirm` | `text`: a question; does not authorize subsequent input itself |
 | `done` | `text`: observed completion evidence |
 
@@ -90,7 +126,14 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D w
 cargo audit --file src-tauri/Cargo.lock
 ```
 
-Install the audit tool with `cargo install cargo-audit --locked` if needed. Windows CI runs these checks and builds the executable. Regression tests never send live desktop input. The ignored `capture_primary_monitor_smoke` Rust test can be run manually with `-- --ignored` on an interactive desktop; it captures in memory without sending input or saving the image.
+Install the audit tool with `cargo install cargo-audit --locked` if needed. Windows CI runs these checks and builds the executable. Regression tests never send live desktop input. To check capture geometry on an interactive desktop, run `cargo test --manifest-path src-tauri/Cargo.toml capture_primary_monitor_smoke -- --ignored`; it captures in memory without sending input or saving the image.
+
+An optional local-model test checks point and box refinement against a synthetic taskbar image. It starts with a deliberately high estimate and verifies that the corrected point falls inside the target icon. No desktop input is sent:
+
+```powershell
+$env:VISION_TEST_ENDPOINT = 'http://127.0.0.1:8889/v1'
+cargo test --manifest-path src-tauri/Cargo.toml local_vision_precision_probe -- --ignored --nocapture
+```
 
 Dependency updates replace `screenshots` with `xcap`, remove the unused shell plugin and unnecessary image decoders, and refresh both lockfiles. See [SECURITY.md](SECURITY.md) for remaining upstream warnings and validation limits.
 

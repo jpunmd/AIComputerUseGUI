@@ -1,12 +1,7 @@
-import {
-  ActionResult,
-  ChatSession,
-  SerializedMessage,
-  TaskRecord,
-} from '../types';
+import { ActionResult, ChatSession, SerializedMessage } from '../types';
+import { restoreTask } from './taskSchema';
 
 export const MAX_IMPORT_BYTES = 32 * 1024 * 1024;
-const statuses = ['planning', 'running', 'stopped', 'completed', 'needs_user'];
 const actions = [
   'click',
   'left_click',
@@ -53,21 +48,6 @@ function coordinates(value: unknown): number[] {
   }
   return [...value];
 }
-function task(value: unknown): TaskRecord {
-  const data = object(value);
-  if (
-    !statuses.includes(String(data.status)) ||
-    !Array.isArray(data.plan) ||
-    data.plan.length > 7
-  )
-    throw new Error('Invalid saved task');
-  return {
-    goal: text(data.goal, 8192),
-    plan: data.plan.map((s) => text(s, 400)),
-    status: 'stopped',
-    summary: text(data.summary, 10000),
-  };
-}
 function action(value: unknown): ActionResult {
   const data = object(value),
     args = object(data.arguments);
@@ -101,9 +81,11 @@ function message(value: unknown): SerializedMessage {
     content: text(data.content),
     timestamp: date(data.timestamp),
   };
-  if (data.task !== undefined) result.task = task(data.task);
+  if (data.task !== undefined) result.task = restoreTask(data.task);
   if (data.action !== undefined) result.action = action(data.action);
   if (data.thinking !== undefined) result.thinking = text(data.thinking);
+  if (data.modelResponse !== undefined)
+    result.modelResponse = text(data.modelResponse, 33000);
   for (const key of ['screenshot', 'zoomCrop'] as const) {
     if (data[key] !== undefined) {
       const image = text(data[key], 24 * 1024 * 1024);
