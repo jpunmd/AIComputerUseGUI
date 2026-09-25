@@ -1,4 +1,13 @@
 /** @type {import('tailwindcss').Config} */
+
+// Theme colors are CSS variables (RGB channels) defined per theme in
+// src/index.css, so one set of class names serves both light and dark mode.
+const themed = (name, shades) =>
+  Object.fromEntries(
+    shades.map((shade) => [shade, `rgb(var(--${name}-${shade}) / <alpha-value>)`]),
+  );
+const SCALE = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
+
 export default {
   content: [
     "./index.html",
@@ -7,46 +16,16 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: {
-          50: '#f0f9ff',
-          100: '#e0f2fe',
-          200: '#bae6fd',
-          300: '#7dd3fc',
-          400: '#38bdf8',
-          500: '#0ea5e9',
-          600: '#0284c7',
-          700: '#0369a1',
-          800: '#075985',
-          900: '#0c4a6e',
-          950: '#082f49',
-        },
-        dark: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617',
-        }
+        // Clay accent.
+        primary: themed('primary', SCALE),
+        // Warm neutrals, ordered by role rather than lightness: 950 is the
+        // page background, 800 a raised surface, 600-700 borders, 400-500
+        // secondary text, and 50 the strongest text — in both themes.
+        ink: themed('ink', SCALE),
+        danger: 'rgb(var(--danger) / <alpha-value>)',
+        success: 'rgb(var(--success) / <alpha-value>)',
+        warning: 'rgb(var(--warning) / <alpha-value>)',
       },
-      animation: {
-        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'glow': 'glow 2s ease-in-out infinite alternate',
-      },
-      keyframes: {
-        glow: {
-          '0%': { boxShadow: '0 0 5px rgba(14, 165, 233, 0.5), 0 0 10px rgba(14, 165, 233, 0.3)' },
-          '100%': { boxShadow: '0 0 20px rgba(14, 165, 233, 0.8), 0 0 30px rgba(14, 165, 233, 0.5)' },
-        }
-      },
-      backdropBlur: {
-        xs: '2px',
-      }
     },
   },
   plugins: [],

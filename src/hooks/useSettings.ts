@@ -1,6 +1,7 @@
 import { TOOL_DEFINITION } from '../agent/protocol';
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
+import { THEME_PREFERENCES } from '../theme';
 
 export const DEFAULT_SYSTEM_PROMPT = `You are a desktop control agent. Your sole purpose is to control the user's computer by taking actions with the mouse and keyboard to accomplish tasks and answer questions. Come up with a plan to answer the question or accomplish the task before starting, then carry it out one action at a time.
 
@@ -63,6 +64,8 @@ export const DEFAULT_SETTINGS: Settings = {
   saveScreenshotsInSessions: false, // Opt in to persisting desktop images.
   reviewEachAction: true, // Ask before each mouse/keyboard action unless the user saves direct control as the default.
   simpleToolFormat: true, // Flat tool call that small local models follow reliably; off = full progress/memory protocol.
+  theme: 'system', // Follow the OS light/dark setting until the user picks one.
+  showSessions: true, // Saved-sessions sidebar open by default.
 };
 
 const STORAGE_KEY = 'ai-computer-use-settings';
@@ -117,5 +120,6 @@ export function sanitizeSettings(value: unknown): Settings {
   result.actionDelayMs=bounded(result.actionDelayMs,0,10000,1000);
   result.screenshotMaxDimension=Math.round(bounded(result.screenshotMaxDimension,256,3840,1920));
   result.zoomCropFraction=bounded(result.zoomCropFraction,0.05,1,0.3);
+  if(!THEME_PREFERENCES.includes(result.theme)) result.theme=DEFAULT_SETTINGS.theme;
   return result;
 }

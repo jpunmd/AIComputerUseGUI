@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ActionConfirmation } from '../src/components/ActionConfirmation';
+import {
+  ActionConfirmation,
+  ENTER_ARM_DELAY_MS,
+} from '../src/components/ActionConfirmation';
 afterEach(cleanup);
 
 describe('task approval dialog', () => {
@@ -25,6 +28,46 @@ describe('task approval dialog', () => {
     expect(request.onConfirm).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: /Stop task/ }));
     expect(stop).toHaveBeenCalledOnce();
+  });
+  it('approves with Enter only after a short delay, and rejects with Escape', () => {
+    vi.useFakeTimers();
+    try {
+      const request = {
+        message: 'Click the marked target',
+        onConfirm: vi.fn(),
+        onDeny: vi.fn(),
+      };
+      render(<ActionConfirmation request={request} onStop={vi.fn()} />);
+      fireEvent.keyDown(window, { key: 'Enter' });
+      expect(request.onConfirm).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(ENTER_ARM_DELAY_MS);
+      fireEvent.keyDown(window, { key: 'Enter', repeat: true });
+      expect(request.onConfirm).not.toHaveBeenCalled();
+      fireEvent.keyDown(window, { key: 'Enter' });
+      expect(request.onConfirm).toHaveBeenCalledOnce();
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(request.onDeny).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('leaves Enter on a focused button to that button', () => {
+    vi.useFakeTimers();
+    try {
+      const request = {
+        message: 'Click the marked target',
+        onConfirm: vi.fn(),
+        onDeny: vi.fn(),
+      };
+      render(<ActionConfirmation request={request} onStop={vi.fn()} />);
+      vi.advanceTimersByTime(ENTER_ARM_DELAY_MS);
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Reject' }), {
+        key: 'Enter',
+      });
+      expect(request.onConfirm).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('shows only one-time approval for model questions', () => {
     render(

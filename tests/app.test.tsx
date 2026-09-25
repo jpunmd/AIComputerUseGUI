@@ -14,10 +14,13 @@ const mocks = vi.hoisted(() => ({
   setError: vi.fn(),
   saveSession: vi.fn(),
   updateSettings: vi.fn(),
+  stopTask: vi.fn(),
   settings: {} as Record<string, unknown>,
+  agent: {} as Record<string, unknown>,
 }));
 vi.mock('../src/hooks/useAgent', () => ({
   useAgent: () => ({
+    stopTask: mocks.stopTask,
     isProcessing: false,
     messages: [],
     error: null,
@@ -31,6 +34,7 @@ vi.mock('../src/hooks/useAgent', () => ({
     previewAction: mocks.previewAction,
     testConnection: mocks.testConnection,
     setError: mocks.setError,
+    ...mocks.agent,
   }),
 }));
 vi.mock('../src/hooks/useSettings', async (importOriginal) => {
@@ -59,6 +63,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mocks.settings = {};
+  mocks.agent = {};
 });
 
 describe('standard task workflow', () => {
@@ -109,5 +114,14 @@ describe('standard task workflow', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() => expect(mocks.runTask).toHaveBeenCalledOnce());
     expect(mocks.runTask.mock.calls[0][4]).toBe(true);
+  });
+  it('swaps Send for Stop while running and shows the run control mode', () => {
+    mocks.agent = { isProcessing: true, isDirectControl: true };
+    render(<App />);
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(mocks.stopTask).toHaveBeenCalledOnce();
+    expect(screen.getByText(/you allowed this task/)).toBeDefined();
+    expect(screen.getByText('Ctrl+Alt+F12')).toBeDefined();
   });
 });
