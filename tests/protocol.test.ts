@@ -41,6 +41,16 @@ describe('model wire instructions', () => {
     }
   });
 
+  it('examples list fields in schema order, which constrained decoding enforces', () => {
+    const order = Object.keys(COMPUTER_TOOL.function.parameters.properties);
+    for (const [, json] of SYSTEM_RULES.matchAll(/<tool_call>(.*?)<\/tool_call>/g)) {
+      const positions = Object.keys(JSON.parse(json).arguments).map((k) =>
+        order.indexOf(k),
+      );
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    }
+  });
+
   it('the plan example parses into steps with success conditions', () => {
     const plan = [...SYSTEM_RULES.matchAll(/<tool_call>(.*?)<\/tool_call>/g)]
       .map(([, json]) => JSON.parse(json).arguments)

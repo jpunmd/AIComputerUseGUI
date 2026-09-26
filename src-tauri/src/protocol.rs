@@ -141,6 +141,22 @@ mod tests {
             assert!(args["properties"].get(field).is_some());
         }
         assert_eq!(args["properties"]["steps"]["maxItems"], 7);
+        // Grammar-constrained servers emit properties in schema order. Keep the
+        // file's order (which the prompt examples follow), not alphabetical:
+        // text must not be forced last, or a model that wants to add screen
+        // after it can only keep extending the string.
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("../../src/agent/computer-tool.json")).unwrap();
+        let keys =
+            |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            keys(&args["properties"]),
+            keys(&file["function"]["parameters"]["properties"])
+        );
+        assert_eq!(
+            keys(&format["json_schema"]["schema"]["properties"]),
+            ["name", "arguments"]
+        );
         assert_eq!(
             response_format(500.0)["json_schema"]["schema"]["properties"]["arguments"]
                 ["properties"]["coordinate"]["items"]["maximum"],

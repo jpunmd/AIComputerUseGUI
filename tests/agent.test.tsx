@@ -523,7 +523,8 @@ describe('agent controller safety', () => {
     const invalid = {
       ...reply('none'),
       success: false,
-      output_text: '{"bad":"response"}',
+      // A runaway string, as when a model cannot close a constrained field.
+      output_text: '{"bad":"response ' + 'keyword '.repeat(2000),
       error: 'Failed to parse response: missing field action',
     };
     responses = [invalid, invalid, invalid];
@@ -535,6 +536,15 @@ describe('agent controller safety', () => {
     expect(result.current.messages.filter((m) => m.modelResponse)).toHaveLength(
       3,
     );
+    // The full response stays visible; only a short excerpt is replayed.
+    expect(
+      result.current.messages.find((m) => m.modelResponse)?.modelResponse,
+    ).toBe(invalid.output_text);
+    const replayed = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    )[1][1].priorTurns[0].assistant_content;
+    expect(replayed.length).toBeLessThan(800);
+    expect(replayed).toContain('[… truncated]');
     expect(
       mocks.invoke.mock.calls.filter((c) => c[0] === 'process_computer_use'),
     ).toHaveLength(3);

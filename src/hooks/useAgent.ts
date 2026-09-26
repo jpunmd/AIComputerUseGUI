@@ -44,6 +44,8 @@ function describeAction(action: ActionResult): string {
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // Local models occasionally need more than one nudge to fix their wire format.
 export const MAX_FORMAT_REPAIRS = 2;
+// Characters of a rejected response replayed to the model for its repair.
+export const MAX_REJECTED_REPLAY = 600;
 
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -219,10 +221,16 @@ export function useAgent() {
           response.output_text ? { modelResponse: response.output_text } : {},
         );
         if (response.output_text) {
+          // The start is enough to correct a format error. Replaying a whole
+          // runaway response would crowd out history and prime the same loop.
+          const excerpt =
+            response.output_text.length > MAX_REJECTED_REPLAY
+              ? response.output_text.slice(0, MAX_REJECTED_REPLAY) +
+                ' [… truncated]'
+              : response.output_text;
           memory.current.record(
             query,
-            'Rejected output (not executed; correct its format):\n' +
-              response.output_text,
+            'Rejected output (not executed; correct its format):\n' + excerpt,
           );
         }
         throw new Error(response.error || 'Model request failed');
