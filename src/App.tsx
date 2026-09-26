@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Settings,
   Sparkles,
@@ -18,7 +19,7 @@ import {
   SessionHistory,
 } from './components';
 import { useAgent } from './hooks/useAgent';
-import { useSettings } from './hooks/useSettings';
+import { useSettings, pickModel } from './hooks/useSettings';
 import { useSessions } from './hooks/useSessions';
 import { ActionConfirmation } from './components/ActionConfirmation';
 import { TaskPanel } from './components/TaskPanel';
@@ -87,10 +88,26 @@ function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // Follow the server: when it doesn't serve the configured model (a fresh
+  // install's default, or a GGUF swapped since), switch to one it does.
+  // A run already in progress keeps the settings it started with.
+  const syncModel = async () => {
+    try {
+      const models = await invoke<string[]>('fetch_available_models', {
+        apiEndpoint: settingsRef.current.apiEndpoint,
+      });
+      const model = pickModel(settingsRef.current.modelId, models);
+      if (model) updateSettings({ modelId: model });
+    } catch {
+      // Unreachable or no model list: the connection status already shows it.
+    }
+  };
+
   useEffect(() => {
     const checkConnection = async () => {
       const result = await testConnection(settingsRef.current);
       setIsConnected(result);
+      if (result) await syncModel();
     };
 
     // Test immediately on mount
@@ -108,6 +125,7 @@ function App() {
     const timer = setTimeout(async () => {
       const result = await testConnection(settingsRef.current);
       setIsConnected(result);
+      if (result) await syncModel();
     }, 800);
     return () => clearTimeout(timer);
   }, [settings.apiEndpoint, settings.modelId, testConnection]);

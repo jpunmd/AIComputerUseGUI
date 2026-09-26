@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../src/App';
 const mocks = vi.hoisted(() => ({
   runTask: vi.fn().mockResolvedValue(undefined),
@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => ({
   stopTask: vi.fn(),
   settings: {} as Record<string, unknown>,
   agent: {} as Record<string, unknown>,
+  models: [] as string[],
+  invoke: vi.fn(),
 }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('../src/hooks/useAgent', () => ({
   useAgent: () => ({
     stopTask: mocks.stopTask,
@@ -64,6 +67,12 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.settings = {};
   mocks.agent = {};
+  mocks.models = [];
+});
+beforeEach(() => {
+  mocks.invoke.mockImplementation(async (command: string) =>
+    command === 'fetch_available_models' ? mocks.models : undefined,
+  );
 });
 
 describe('standard task workflow', () => {
@@ -138,5 +147,35 @@ describe('header toggles', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Hide saved sessions' }));
     expect(mocks.updateSettings).toHaveBeenCalledWith({ showSessions: false });
+  });
+});
+
+describe('model selection', () => {
+  it('switches to a model the local server serves when the saved one is missing', async () => {
+    // llama.cpp lists the loaded GGUF; the built-in default is not served.
+    mocks.models = ['../models/Qwen3-VL-8B-Instruct-Q4_K_M.gguf'];
+    render(<App />);
+    await waitFor(() =>
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        modelId: '../models/Qwen3-VL-8B-Instruct-Q4_K_M.gguf',
+      }),
+    );
+  });
+  it('keeps a saved model the server lists, and changes nothing when unreachable', async () => {
+    mocks.settings = { modelId: 'served' };
+    mocks.models = ['other', 'served'];
+    render(<App />);
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('fetch_available_models', {
+        apiEndpoint: expect.any(String),
+      }),
+    );
+    cleanup();
+    mocks.invoke.mockRejectedValue('connection refused');
+    render(<App />);
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalled());
+    expect(mocks.updateSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ modelId: expect.anything() }),
+    );
   });
 });

@@ -69,6 +69,16 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const STORAGE_KEY = 'ai-computer-use-settings';
 
+/**
+ * Which model to use given what the server lists (loaded models first).
+ * Keeps the configured ID when the server serves it; otherwise returns the
+ * first available one. Returns null when nothing should change.
+ */
+export function pickModel(current: string, available: string[]): string | null {
+  if (!available.length || available.includes(current)) return null;
+  return available[0];
+}
+
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(() => {
     try {

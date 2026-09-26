@@ -9,7 +9,7 @@ A Windows Tauri application that lets a local vision-language model propose and 
 | **Qwen 3.8** (e.g. 27B) | Main development model, served locally by llama.cpp |
 | **Qwen 3.8 Flash-Next** | Faster option for the same workflow |
 
-Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint, and enter the exact model ID the server reports. The tool call is deliberately flat (no nested objects; a plan is a list of strings) because local models follow that far more reliably than nested bookkeeping. Thinking mode is on by default and its reasoning is shown expanded.
+Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint. The app reads the server's `/v1/models` list and uses a model it serves (a loaded one first), so you normally don't need to type a model ID. The tool call is deliberately flat (no nested objects; a plan is a list of strings) because local models follow that far more reliably than nested bookkeeping. Thinking mode is on by default and its reasoning is shown expanded.
 
 ## Getting started
 
@@ -22,7 +22,7 @@ npm run tauri dev
 
 Build for production with `npm run tauri build`.
 
-1. Start your local vision model server. In Settings, enter its API base URL (such as `http://localhost:8000/v1`) and the exact model ID exposed by that server.
+1. Start your local vision model server. In Settings, enter its API base URL (such as `http://localhost:8000/v1`). If the saved model is not one the server lists, the app switches to one it does; with several models, pick one from the list.
 2. Test the connection. Put the target application on the **primary monitor** and keep its controls visible beside this controller.
 3. Enter a task with clear completion criteria. Planning is enabled by default. Select **Plan only** to inspect milestones before any input executes.
 4. With **Review each action** enabled, choose **Allow once** for one action or **Allow for this task** to let the remaining mouse/keyboard actions run automatically. The dialog previews the proposed click. An unanswered proposal expires after 60 seconds.

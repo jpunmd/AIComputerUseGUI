@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server, RefreshCw, FileText } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Settings } from '../types';
-import { DEFAULT_SYSTEM_PROMPT } from '../hooks/useSettings';
+import { DEFAULT_SYSTEM_PROMPT, pickModel } from '../hooks/useSettings';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -48,10 +48,11 @@ export function SettingsPanel({
         apiEndpoint: settings.apiEndpoint,
       });
       if (seq !== fetchSeqRef.current) return; // Stale response — ignore
-      // Never auto-replace the configured model: an ID missing from the list
-      // may still be valid (proxies and some servers don't list everything).
-      // The select below shows it as an extra option instead.
       setAvailableModels(models);
+      // Default to a model the server actually serves (loaded ones are listed
+      // first). A listed choice is kept; an unreachable server changes nothing.
+      const model = pickModel(settings.modelId, models);
+      if (model) onUpdateSettings({ modelId: model });
     } catch (err) {
       if (seq !== fetchSeqRef.current) return; // Stale response — ignore
       const errorMessage = err instanceof Error ? err.message : String(err);

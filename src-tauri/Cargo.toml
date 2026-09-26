@@ -1,6 +1,6 @@
 [package]
 name = "ai-computer-use-gui"
-version = "2.0.2"
+version = "2.0.3"
 description = "AI Computer Use Agent powered by a vision-language model"
 authors = ["you"]
 edition = "2021"

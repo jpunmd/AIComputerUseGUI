@@ -634,6 +634,19 @@ pub struct ModelsResponse {
 #[derive(Debug, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
+    /// llama.cpp router mode reports load state; accept a string or {"value": ...}.
+    #[serde(default)]
+    pub status: Option<serde_json::Value>,
+}
+
+impl ModelInfo {
+    fn loaded(&self) -> bool {
+        let status = self.status.as_ref();
+        status
+            .and_then(|s| s.get("value").or(Some(s)))
+            .and_then(|s| s.as_str())
+            == Some("loaded")
+    }
 }
 
 /// Fetch available models from the API endpoint
@@ -650,9 +663,13 @@ pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
         .await?;
 
     let models_response: ModelsResponse = decode_response(response).await?;
+    Ok(order_models(models_response.data))
+}
 
-    let model_ids: Vec<String> = models_response.data.into_iter().map(|m| m.id).collect();
-    Ok(model_ids)
+/// Loaded models first (stable), so the first entry is a sensible default.
+fn order_models(mut models: Vec<ModelInfo>) -> Vec<String> {
+    models.sort_by_key(|m| !m.loaded());
+    models.into_iter().map(|m| m.id).collect()
 }
 
 #[cfg(test)]
@@ -1007,5 +1024,27 @@ mod tests {
         let result = fetch_models(&address).await;
         server.await.unwrap();
         assert!(result.unwrap_err().to_string().contains("2 MB limit"));
+    }
+    #[test]
+    fn loaded_models_are_listed_first_and_plain_lists_keep_their_order() {
+        let parse = |v: serde_json::Value| -> Vec<String> {
+            order_models(serde_json::from_value::<ModelsResponse>(v).unwrap().data)
+        };
+        assert_eq!(
+            parse(serde_json::json!({"data":[
+                {"id":"a","status":{"value":"unloaded"}},
+                {"id":"b","status":{"value":"loaded"}},
+                {"id":"c","status":"loaded"},
+                {"id":"d"}
+            ]})),
+            ["b", "c", "a", "d"]
+        );
+        // llama.cpp single-model mode: one entry named after the GGUF file.
+        assert_eq!(
+            parse(
+                serde_json::json!({"object":"list","data":[{"id":"../models/Qwen3-VL-8B-Instruct-Q4_K_M.gguf","object":"model","owned_by":"llamacpp","meta":null}]})
+            ),
+            ["../models/Qwen3-VL-8B-Instruct-Q4_K_M.gguf"]
+        );
     }
 }

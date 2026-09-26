@@ -1,7 +1,12 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { invoke } from '@tauri-apps/api/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPanel } from '../src/components/SettingsPanel';
-import { DEFAULT_SETTINGS, sanitizeSettings } from '../src/hooks/useSettings';
+import {
+  DEFAULT_SETTINGS,
+  pickModel,
+  sanitizeSettings,
+} from '../src/hooks/useSettings';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue([]),
@@ -50,5 +55,35 @@ describe('Theme setting', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('model picker', () => {
+  it('keeps a served model and otherwise picks the first listed one', () => {
+    expect(pickModel('b', ['a', 'b'])).toBeNull();
+    expect(pickModel('missing', ['loaded.gguf', 'other.gguf'])).toBe(
+      'loaded.gguf',
+    );
+    expect(pickModel('manual-id', [])).toBeNull();
+  });
+
+  it('switches the settings to a model the server serves', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(['Qwen3-VL-8B-Instruct-Q4_K_M.gguf']);
+    const onUpdateSettings = vi.fn();
+    render(
+      <SettingsPanel
+        settings={DEFAULT_SETTINGS}
+        onUpdateSettings={onUpdateSettings}
+        onResetSettings={vi.fn()}
+        onTestConnection={vi.fn()}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(onUpdateSettings).toHaveBeenCalledWith({
+        modelId: 'Qwen3-VL-8B-Instruct-Q4_K_M.gguf',
+      }),
+    );
   });
 });
