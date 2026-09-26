@@ -49,10 +49,8 @@ describe('saved sessions', () => {
       milestones: [
         { id: 'm1-1', status: 'completed', evidence: 'Editor visible' },
       ],
-      notes: [
-        { kind: 'artifact', text: 'report.txt', evidence: 'Editor title' },
-      ],
     });
+    memory.interrupted('report.txt dialog closed');
     const saved = {
       ...session,
       messages: [
@@ -64,7 +62,7 @@ describe('saved sessions', () => {
     };
     const restored = validateSession(saved).messages[0].task!;
     expect(restored.plan[0].status).toBe('completed');
-    expect(restored.notes[0].text).toBe('report.txt');
+    expect(restored.notes[0].text).toBe('report.txt dialog closed');
     expect(restored.status).toBe('stopped');
     expect(restored).not.toHaveProperty('approved');
     const invalid = structuredClone(saved);

@@ -16,7 +16,6 @@ export interface Settings {
   debugMode: boolean; // Show developer instruments (the calibration probe in the expanded screenshot view)
   saveScreenshotsInSessions: boolean; // Include screenshots/zoom crops when saving sessions; off = text-only sessions (tiny storage)
   reviewEachAction: boolean; // Default for new runs: ask before each mouse/keyboard action (off = direct control)
-  simpleToolFormat: boolean; // Flat tool call (screen/last_action/step_done) instead of the nested progress object; easier for small models
   theme: Theme; // Color scheme; saved so the app reopens in the last-used mode
   showSessions: boolean; // Saved-sessions sidebar is open
 }
@@ -28,7 +27,7 @@ export interface Coordinate {
   y: number;
 }
 
-// Simple tool format: flat observations the controller turns into TaskProgress.
+// Flat observations the controller turns into TaskProgress.
 export interface StepReport {
   screen?: string;
   last_action?: 'worked' | 'failed' | 'unclear';
@@ -37,7 +36,6 @@ export interface StepReport {
 
 export interface ActionResult {
   action: string;
-  progress?: TaskProgress;
   report?: StepReport;
   arguments: {
     coordinate?: number[];
@@ -47,6 +45,8 @@ export interface ActionResult {
     end_coordinate?: number[];
     direction?: string;
     amount?: number;
+    steps?: string[]; // plan only
+    reason?: string; // plan only
   };
 }
 
@@ -174,7 +174,7 @@ export interface ExecutionReceipt {
   evidence?: Evidence;
 }
 
-// Untrusted model metadata. It never contains executor authorization.
+// Controller-derived from the model's flat report; never an input capability.
 export interface TaskProgress {
   milestones?: {
     id: string;
@@ -185,13 +185,4 @@ export interface TaskProgress {
     status: 'succeeded' | 'failed' | 'uncertain';
     evidence: string;
   };
-  notes?: {
-    id?: string;
-    kind: NoteKind;
-    text: string;
-    evidence?: string;
-  }[];
-  resolve_questions?: { id: string; answer: string; evidence: string }[];
-  next_milestone_id?: string;
-  expected_outcome?: string;
 }

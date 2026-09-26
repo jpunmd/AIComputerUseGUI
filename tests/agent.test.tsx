@@ -2,15 +2,13 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAgent } from '../src/hooks/useAgent';
 import { DEFAULT_SETTINGS } from '../src/hooks/useSettings';
-import { AgentResponse, TaskProgress } from '../src/types';
+import { AgentResponse, StepReport } from '../src/types';
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
-// Most tests exercise the full progress protocol; simple-format tests opt in.
 const settings = {
   ...DEFAULT_SETTINGS,
-  simpleToolFormat: false,
   enablePlanning: false,
   zoomRefine: false,
   actionDelayMs: 0,
@@ -19,12 +17,13 @@ const settings = {
 const reply = (
   action: string,
   args: object = {},
-  progress?: TaskProgress,
+  report?: StepReport,
 ): AgentResponse => ({
   success: true,
   output_text: JSON.stringify({ action, arguments: args }),
-  action: { action, arguments: args, ...(progress ? { progress } : {}) },
+  action: { action, arguments: args, ...(report ? { report } : {}) },
 });
+const plan = (...steps: string[]) => reply('plan', { steps });
 let responses: AgentResponse[] = [];
 let supervised = true;
 let observationNumber = 0;
@@ -80,32 +79,18 @@ afterEach(cleanup);
 describe('agent controller safety', () => {
   it('recovers from a window switch with fresh targeting and retains task permission and milestones', async () => {
     responses = [
-      reply('plan', { text: 'Open Chrome' }),
+      plan('Open Chrome -> Chrome window visible'),
       reply('click', { coordinate: [153, 977] }),
       reply(
         'click',
         { coordinate: [150, 980] },
-        {
-          outcome: {
-            status: 'failed',
-            evidence: 'Task View opened instead of Chrome',
-          },
-        },
+        { screen: 'Task View opened instead of Chrome', last_action: 'failed' },
       ),
       reply('click', { coordinate: [600, 400] }),
       reply(
         'done',
         { text: 'Chrome is open' },
-        {
-          outcome: { status: 'succeeded', evidence: 'Chrome window visible' },
-          milestones: [
-            {
-              id: 'm1-1',
-              status: 'completed',
-              evidence: 'Chrome window visible',
-            },
-          ],
-        },
+        { screen: 'Chrome window visible', last_action: 'worked' },
       ),
       reply('done', { text: 'Chrome remains open' }),
     ];
@@ -168,19 +153,13 @@ describe('agent controller safety', () => {
     expect(recoveryPrompt).toContain('Open Chrome');
   });
 
-  it('requires outcome review before more input after a possibly partial action', async () => {
+  it('asks for review of a possibly partial action on a fresh screen before more input', async () => {
     responses = [
       reply('double_click', { coordinate: [200, 300] }),
-      reply('key', { key: 'enter' }), // Missing outcome must not execute.
       reply(
         'done',
         { text: 'File opened on the first click' },
-        {
-          outcome: {
-            status: 'succeeded',
-            evidence: 'File visible on new screen',
-          },
-        },
+        { screen: 'File visible on new screen', last_action: 'worked' },
       ),
       reply('done', { text: 'File remains open' }),
     ];
@@ -210,6 +189,7 @@ describe('agent controller safety', () => {
     )[1][1].query;
     expect(prompt).toContain('Some input may have been sent');
     expect(prompt).toContain('Do not blindly repeat');
+    expect(prompt).toContain('Set last_action from THIS screenshot');
   });
 
   it('bounds repeated window-change recovery without executing stale proposals', async () => {
@@ -271,14 +251,7 @@ describe('agent controller safety', () => {
       reply(
         'click',
         { coordinate: [100 + i, 900] },
-        i > 0 && i % 2 === 0
-          ? {
-              outcome: {
-                status: 'succeeded',
-                evidence: 'Previous input reached its target',
-              },
-            }
-          : undefined,
+        i > 0 && i % 2 === 0 ? { last_action: 'worked' } : undefined,
       ),
     );
     const original = mocks.invoke.getMockImplementation()!;
@@ -370,14 +343,14 @@ describe('agent controller safety', () => {
   );
 
   it('allows the rest of a task from one prompt, but new runs still require approval', async () => {
-    const observed = {
-      status: 'succeeded' as const,
-      evidence: 'New page visible',
+    const observed: StepReport = {
+      screen: 'New page visible',
+      last_action: 'worked',
     };
     responses = [
       reply('key', { key: 'enter' }),
-      reply('key', { key: 'tab' }, { outcome: observed }),
-      reply('done', { text: 'Requested page visible' }, { outcome: observed }),
+      reply('key', { key: 'tab' }, observed),
+      reply('done', { text: 'Requested page visible' }, observed),
       reply('done', { text: 'Requested page still visible' }),
     ];
     const { result } = renderHook(() => useAgent());
@@ -444,11 +417,8 @@ describe('agent controller safety', () => {
 
   it('refines the same observation using task context and executes only the corrected point', async () => {
     responses = [
-      reply(
-        'click',
-        { coordinate: [146, 900] },
-        { expected_outcome: 'Chrome opens' },
-      ),
+      plan('Open Chrome -> Chrome opens'),
+      reply('click', { coordinate: [146, 900] }),
     ];
     const original = mocks.invoke.getMockImplementation()!;
     mocks.invoke.mockImplementation((cmd, args) =>
@@ -467,8 +437,9 @@ describe('agent controller safety', () => {
     act(() => {
       task = result.current.runTask('Find weather in Philadelphia', {
         ...settings,
+        enablePlanning: true,
         zoomRefine: true,
-        maxTurns: 1,
+        maxTurns: 2,
       });
     });
     await waitFor(() =>
@@ -477,7 +448,7 @@ describe('agent controller safety', () => {
     const refinement = mocks.invoke.mock.calls.find(
       (c) => c[0] === 'refine_coordinate',
     )![1];
-    expect(refinement.observationId).toBe('obs-1');
+    expect(refinement.observationId).toBe('obs-2');
     expect(refinement.query).toContain('Find weather in Philadelphia');
     expect(refinement.query).toContain('Chrome opens');
     expect(result.current.pendingConfirmation!.preview).toEqual({
@@ -589,24 +560,15 @@ describe('agent controller safety', () => {
     expect(mocks.invoke.mock.calls.some((c) => c[0] === 'prepare_action')).toBe(false);
   });
 
-  it('executes a first input whose progress wrongly reports an outcome (regression)', async () => {
+  it('executes a first input whose report wrongly reviews a previous action (regression)', async () => {
     responses = [
-      reply('plan', {
-        text: JSON.stringify({
-          steps: [
-            { title: 'Open Chrome', success_criteria: 'Chrome window visible' },
-          ],
-        }),
-      }),
+      plan('Open Chrome -> Chrome window visible'),
       reply(
         'left_click',
         { coordinate: [150, 984] },
         {
-          next_milestone_id: 'm1-1',
-          outcome: {
-            status: 'succeeded',
-            evidence: 'Desktop is visible with no browser window open yet',
-          },
+          screen: 'Desktop is visible with no browser window open yet',
+          last_action: 'worked',
         },
       ),
       reply('none', { text: 'Stopping here' }),
@@ -627,91 +589,35 @@ describe('agent controller safety', () => {
         m.content.includes('fresh observation'),
       ),
     ).toBe(false);
+    // The first input had nothing to review; the next turn records it as uncertain.
     expect(result.current.task?.receipts[0]).toMatchObject({
       milestoneId: 'm1-1',
-      outcome: 'unverified',
+      outcome: 'uncertain',
     });
   });
 
-  it('executes a click whose progress resolves an invented question ID (regression)', async () => {
+  it('runs a flat tool-call task with a plan made of step strings', async () => {
     responses = [
-      reply('plan', {
-        text: JSON.stringify({
-          steps: [
-            { title: 'Open Chrome', success_criteria: 'Chrome window visible' },
-          ],
-        }),
-      }),
-      reply(
-        'click',
-        { coordinate: [151, 975] },
-        {
-          next_milestone_id: 'm1-1',
-          outcome: {
-            status: 'succeeded',
-            evidence: 'Desktop is visible with Chrome icon in the taskbar',
-          },
-          resolve_questions: [
-            {
-              id: 'browser_location',
-              answer: 'Chrome browser icon is visible in the taskbar',
-              evidence: 'Chrome icon visible in taskbar',
-            },
-          ],
-        },
+      plan(
+        'Open Chrome -> Chrome window visible',
+        'Search -> Weather results visible',
       ),
-      reply('none', { text: 'Stopping here' }),
-    ];
-    const { result } = renderHook(() => useAgent());
-    await act(async () => {
-      await result.current.runTask(
-        "What's the weather in philadelphia like?",
-        { ...settings, enablePlanning: true },
-        false,
-      );
-    });
-    expect(
-      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
-    ).toHaveLength(1);
-    expect(
-      result.current.messages.some((m) => m.content.includes('invalid response')),
-    ).toBe(false);
-  });
-
-  it('simple format: runs a flat tool-call task without any progress object', async () => {
-    const flat = (
-      action: string,
-      args: object,
-      report?: AgentResponse['action']['report'],
-    ): AgentResponse => ({
-      ...reply(action, args),
-      action: { action, arguments: args, ...(report ? { report } : {}) },
-    });
-    responses = [
-      reply('plan', {
-        text: JSON.stringify({
-          steps: [
-            { title: 'Open Chrome', success_criteria: 'Chrome window visible' },
-            { title: 'Search', success_criteria: 'Weather results visible' },
-          ],
-        }),
-      }),
-      flat('click', { coordinate: [151, 975] }, { screen: 'Desktop' }),
-      // No last_action and no step flag: previously a hard failure.
-      flat('key', { key: 'ctrl+l' }),
-      flat(
+      reply('click', { coordinate: [151, 975] }, { screen: 'Desktop' }),
+      // No last_action and no step flag: recorded as uncertain, never a failure.
+      reply('key', { key: 'ctrl+l' }),
+      reply(
         'type',
         { text: 'weather philadelphia' },
         { screen: 'Chrome open', last_action: 'worked', step_done: true },
       ),
-      flat('done', { text: 'Weather for Philadelphia is shown' }),
-      flat('done', { text: 'Weather still shown' }),
+      reply('done', { text: 'Weather for Philadelphia is shown' }),
+      reply('done', { text: 'Weather still shown' }),
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
       await result.current.runTask(
         'Weather in Philadelphia',
-        { ...settings, simpleToolFormat: true, enablePlanning: true },
+        { ...settings, enablePlanning: true },
         false,
       );
     });
@@ -725,115 +631,36 @@ describe('agent controller safety', () => {
       'succeeded',
       'succeeded',
     ]);
-    expect(result.current.task?.plan.map((s) => s.status)).toEqual([
-      'completed',
-      'completed',
+    expect(
+      result.current.task?.plan.map((s) => [s.title, s.successCriteria, s.status]),
+    ).toEqual([
+      ['Open Chrome', 'Chrome window visible', 'completed'],
+      ['Search', 'Weather results visible', 'completed'],
     ]);
     const calls = mocks.invoke.mock.calls.filter(
       (c) => c[0] === 'process_computer_use',
     );
-    expect(calls[0][1].simpleTools).toBe(true);
+    expect(calls[0][1]).not.toHaveProperty('simpleTools');
     expect(calls[0][1].systemPrompt).toContain('step_done');
-    expect(calls[0][1].systemPrompt).not.toContain('resolve_questions');
+    expect(calls[0][1].systemPrompt).not.toContain('progress');
+    expect(calls[0][1].query).toContain('Open Chrome -> a Chrome window is visible');
     expect(calls[2][1].query).toContain('Set last_action from THIS screenshot');
-    expect(calls[2][1].query).not.toContain('progress.outcome');
-  });
-
-  it('tracks two milestones through observed outcomes and keeps metadata out of native input', async () => {
-    responses = [
-      reply('plan', {
-        text: JSON.stringify({
-          steps: [
-            { title: 'Open report', success_criteria: 'Report visible' },
-            {
-              title: 'Save report',
-              success_criteria: 'Saved label visible',
-            },
-          ],
-        }),
-      }),
-      reply(
-        'key',
-        { key: 'ctrl+o' },
-        { next_milestone_id: 'm1-1', expected_outcome: 'Report opens' },
-      ),
-      reply(
-        'key',
-        { key: 'ctrl+s' },
-        {
-          outcome: { status: 'succeeded', evidence: 'Report visible' },
-          milestones: [
-            {
-              id: 'm1-1',
-              status: 'completed',
-              evidence: 'Report text visible',
-            },
-          ],
-          next_milestone_id: 'm1-2',
-          expected_outcome: 'Saved indicator appears',
-        },
-      ),
-      reply(
-        'done',
-        { text: 'Report saved' },
-        {
-          outcome: {
-            status: 'succeeded',
-            evidence: 'Saved indicator visible',
-          },
-          milestones: [
-            {
-              id: 'm1-2',
-              status: 'completed',
-              evidence: 'Correct destination and Saved label visible',
-            },
-          ],
-          notes: [
-            {
-              kind: 'artifact',
-              text: 'C:\\Reports\\final.txt',
-              evidence: 'Save dialog confirmed this destination',
-            },
-          ],
-        },
-      ),
-      reply('done', { text: 'Saved state still visible on new screen' }),
-    ];
-    const { result } = renderHook(() => useAgent());
-    await act(async () => {
-      await result.current.runTask(
-        'Save report',
-        { ...settings, enablePlanning: true },
-        false,
-      );
-    });
-    expect(result.current.task?.status).toBe('completed');
-    expect(result.current.task?.plan.map((s) => s.status)).toEqual([
-      'completed',
-      'completed',
-    ]);
-    expect(result.current.task?.receipts.map((r) => r.outcome)).toEqual([
-      'succeeded',
-      'succeeded',
-    ]);
-    expect(result.current.task?.summary).toContain('C:\\Reports\\final.txt');
+    // Neither the report nor the plan fields reach native input.
     const native = mocks.invoke.mock.calls
       .filter((c) => c[0] === 'prepare_action')
       .map((c) => JSON.parse(c[1].action));
-    expect(native).toHaveLength(2);
-    expect(
-      native.every((a) => !('progress' in a) && !('progress' in a.arguments)),
-    ).toBe(true);
-    const checkpoint =
-      result.current.messages[result.current.messages.length - 1].task;
-    expect(checkpoint?.notes[0].evidence.step).toBe(4);
+    expect(native).toHaveLength(3);
+    expect(native.every((a) => !('report' in a) && !('steps' in a.arguments))).toBe(
+      true,
+    );
   });
 
-  it('does not accept repeated done claims while milestones remain pending', async () => {
+  it('does not accept repeated done claims after the last action failed', async () => {
     responses = [
-      reply('plan', { text: 'Open report\nSave report' }),
-      reply('done', { text: 'Done' }),
-      reply('done', { text: 'Really done' }),
+      plan('Open report', 'Save report'),
+      reply('key', { key: 'enter' }),
+      reply('done', { text: 'Done' }, { last_action: 'failed' }),
+      reply('done', { text: 'Really done' }, { last_action: 'failed' }),
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
@@ -845,27 +672,20 @@ describe('agent controller safety', () => {
     });
     expect(result.current.task?.status).toBe('needs_user');
     expect(result.current.error).toContain('unfinished milestones');
-    expect(mocks.invoke.mock.calls.some((c) => c[0] === 'execute_action')).toBe(
-      false,
-    );
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
     const prompts = mocks.invoke.mock.calls
       .filter((c) => c[0] === 'process_computer_use')
       .map((c) => c[1].query);
-    expect(prompts[2]).toContain('m1-2: Save report (pending)');
+    expect(prompts[3]).toContain('Save report (pending)');
   });
 
-  it('rejects an invalid progress update before input and preserves the previous plan', async () => {
+  it('repairs an invalid plan before input and keeps the previous plan', async () => {
     responses = [
-      reply('plan', { text: 'Open report' }),
-      reply(
-        'key',
-        { key: 'enter' },
-        {
-          milestones: [
-            { id: 'invented', status: 'completed', evidence: 'Trust me' },
-          ],
-        },
-      ),
+      plan('Open report'),
+      // Eight steps: rejected, nothing changes and nothing executes.
+      plan(...Array.from({ length: 8 }, (_, i) => 'Step ' + i)),
       reply('none', { text: 'Need help' }),
     ];
     const { result } = renderHook(() => useAgent());
@@ -876,53 +696,38 @@ describe('agent controller safety', () => {
         false,
       );
     });
-    expect(result.current.task?.plan[0].status).toBe('pending');
+    expect(result.current.task?.plan.map((s) => s.title)).toEqual([
+      'Open report',
+    ]);
+    expect(result.current.task?.revision).toBe(1);
+    const repair = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    )[2][1].query;
+    expect(repair).toContain('one to seven steps');
     expect(mocks.invoke.mock.calls.some((c) => c[0] === 'execute_action')).toBe(
       false,
     );
   });
 
   it('replans once after repeated input and retains the failed approach in memory', async () => {
-    const unchanged = {
-      outcome: {
-        status: 'uncertain' as const,
-        evidence: 'Screen unchanged',
-      },
+    const unchanged: StepReport = {
+      screen: 'Screen unchanged',
+      last_action: 'unclear',
     };
     responses = [
-      reply('plan', { text: 'Open report' }),
+      plan('Open report -> Report text visible'),
       reply('key', { key: 'enter' }),
       reply('key', { key: 'enter' }, unchanged),
       reply('key', { key: 'enter' }, unchanged),
       reply('plan', {
-        text: JSON.stringify({
-          reason: 'Enter had no effect; click the File menu instead',
-          steps: [
-            {
-              id: 'm1-1',
-              title: 'Open through File menu',
-              success_criteria: 'Report text visible',
-            },
-          ],
-        }),
+        reason: 'Enter had no effect; click the File menu instead',
+        steps: ['Open through File menu -> Report text visible'],
       }),
       reply('click', { coordinate: [100, 100] }),
       reply(
         'done',
         { text: 'Report visible' },
-        {
-          outcome: {
-            status: 'succeeded',
-            evidence: 'Report text visible',
-          },
-          milestones: [
-            {
-              id: 'm1-1',
-              status: 'completed',
-              evidence: 'Report text visible',
-            },
-          ],
-        },
+        { screen: 'Report text visible', last_action: 'worked' },
       ),
       reply('done', { text: 'Report remains open' }),
     ];
@@ -936,6 +741,12 @@ describe('agent controller safety', () => {
     });
     expect(result.current.task?.status).toBe('completed');
     expect(result.current.task?.revision).toBe(2);
+    expect(result.current.task?.plan.map((s) => s.title)).toEqual([
+      'Open through File menu',
+    ]);
+    expect(result.current.task?.planChanges.at(-1)?.reason).toContain(
+      'File menu',
+    );
     expect(
       result.current.task?.notes.some(
         (n) => n.kind === 'failure' && n.text.includes('without progress'),
@@ -948,10 +759,11 @@ describe('agent controller safety', () => {
       (c) => c[0] === 'process_computer_use',
     )[4][1].query;
     expect(planRequest).toContain('different approach');
+    expect(planRequest).toContain('Finished steps are kept automatically');
   });
 
-  it('Stop during a progress response cannot apply late completion evidence', async () => {
-    responses = [reply('plan', { text: 'Open report' })];
+  it('Stop during a model response cannot apply late completion evidence', async () => {
+    responses = [plan('Open report')];
     let resolveReview!: (r: AgentResponse) => void;
     const original = mocks.invoke.getMockImplementation()!;
     mocks.invoke.mockImplementation((cmd, args) =>
@@ -977,15 +789,7 @@ describe('agent controller safety', () => {
         reply(
           'done',
           { text: 'Done' },
-          {
-            milestones: [
-              {
-                id: 'm1-1',
-                status: 'completed',
-                evidence: 'Late evidence',
-              },
-            ],
-          },
+          { screen: 'Late evidence', step_done: true },
         ),
       );
       await task;
@@ -1052,12 +856,7 @@ describe('agent controller safety', () => {
       reply(
         'done',
         { text: 'Saved label visible' },
-        {
-          outcome: {
-            status: 'succeeded',
-            evidence: 'Saved label visible',
-          },
-        },
+        { screen: 'Saved label visible', last_action: 'worked' },
       ),
       reply('done', { text: 'Saved label still visible' }),
     ];
@@ -1088,7 +887,7 @@ describe('agent controller safety', () => {
 
   it('keeps a debug preview isolated and revokes its run even when it proposes input', async () => {
     responses = [
-      reply('plan', { text: 'Open Notepad' }),
+      plan('Open Notepad'),
       reply('click', { coordinate: [200, 400] }),
     ];
     const { result } = renderHook(() => useAgent());
@@ -1119,14 +918,7 @@ describe('agent controller safety', () => {
       reply(
         'key',
         { key: 'enter' },
-        i
-          ? {
-              outcome: {
-                status: 'uncertain',
-                evidence: 'Screen unchanged',
-              },
-            }
-          : undefined,
+        i ? { screen: 'Screen unchanged', last_action: 'unclear' } : undefined,
       ),
     );
     const { result } = renderHook(() => useAgent());
@@ -1140,7 +932,7 @@ describe('agent controller safety', () => {
   });
 
   it('plan-only never executes input, and Continue preserves the original goal', async () => {
-    responses = [reply('plan', { text: 'Open the document\nSave the report' })];
+    responses = [plan('Open the document', 'Save the report')];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
       await result.current.runTask(

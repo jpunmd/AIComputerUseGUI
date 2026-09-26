@@ -343,36 +343,6 @@ export function SettingsPanel({
             </button>
           </div>
 
-          {/* Simple tool format */}
-          <div className="flex items-center justify-between">
-            <div className="pr-4">
-              <label
-                id="simple-tool-format-label"
-                className="block text-sm font-medium text-ink-300"
-              >
-                Simple Tool Format
-              </label>
-              <p className="text-xs text-ink-500">
-                Flat tool call that small local models follow reliably; the app tracks plan steps itself. Turn off for the full progress and memory protocol (for larger models).
-              </p>
-            </div>
-            <button
-              role="switch"
-              aria-checked={settings.simpleToolFormat}
-              aria-labelledby="simple-tool-format-label"
-              onClick={() => onUpdateSettings({ simpleToolFormat: !settings.simpleToolFormat })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
-                settings.simpleToolFormat ? 'bg-primary-500' : 'bg-ink-600'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  settings.simpleToolFormat ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
           {/* Screenshot Resolution */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-ink-300">

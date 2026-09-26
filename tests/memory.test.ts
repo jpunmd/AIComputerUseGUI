@@ -24,22 +24,57 @@ function setup() {
   const memory = new TaskMemory();
   memory.start('Save report to C:\\Reports; do not send it.', true);
   memory.observe('screen-1');
-  memory.setPlan(
-    JSON.stringify({
-      steps: [
-        {
-          title: 'Open report',
-          success_criteria: 'Report text visible in editor',
-        },
-        {
-          title: 'Save report',
-          success_criteria: 'Saved indicator and correct path visible',
-        },
-      ],
-    }),
-  );
+  memory.setPlan([
+    'Open report -> Report text visible in editor',
+    'Save report -> Saved indicator and correct path visible',
+  ]);
   return memory;
 }
+function completeFirst(memory: TaskMemory) {
+  memory.applyProgress({
+    milestones: [
+      {
+        id: memory.task!.plan[0].id,
+        status: 'completed',
+        evidence: 'Editor visible',
+      },
+    ],
+  });
+}
+
+describe('flat plans', () => {
+  it('splits each step into a title and success condition', () => {
+    expect(
+      parsePlan(['Open Chrome -> window visible', 'Search → results shown']).steps,
+    ).toEqual([
+      { title: 'Open Chrome', successCriteria: 'window visible' },
+      { title: 'Search', successCriteria: 'results shown' },
+    ]);
+    // A plain step doubles as its own success condition.
+    expect(parsePlan(['Open Chrome']).steps[0]).toEqual({
+      title: 'Open Chrome',
+      successCriteria: 'Open Chrome',
+    });
+    // A numbered list written as text is tolerated.
+    expect(
+      parsePlan('1. Open Chrome -> window visible\n2) Search').steps,
+    ).toHaveLength(2);
+    expect(parsePlan(['x'], 'Retry').reason).toBe('Retry');
+  });
+
+  it('rejects empty, oversized and structured plans', () => {
+    for (const bad of [
+      [],
+      '',
+      Array(8).fill('step'),
+      Array(8).fill('step').join('\n'),
+      ['-> only a condition'],
+      [{ title: 'Open Chrome', success_criteria: 'visible' }],
+      undefined,
+    ])
+      expect(() => parsePlan(bad)).toThrow();
+  });
+});
 
 describe('task progress and durable memory', () => {
   it('bounds the complete task prompt without truncating the original goal or current request', () => {
@@ -49,25 +84,13 @@ describe('task progress and durable memory', () => {
     memory.start(goal, true);
     memory.observe('screen-1');
     memory.setPlan(
-      JSON.stringify({
-        steps: Array.from({ length: 7 }, (_, i) => ({
-          title: 'Step ' + i + 'x'.repeat(200),
-          success_criteria: 'y'.repeat(400),
-        })),
-      }),
+      Array.from(
+        { length: 7 },
+        (_, i) => 'Step ' + i + 'x'.repeat(190) + ' -> ' + 'y'.repeat(190),
+      ),
     );
-    for (let i = 2; i < 20; i++) {
-      memory.observe('screen-' + i);
-      memory.applyProgress({
-        notes: [
-          {
-            kind: 'artifact',
-            text: 'p'.repeat(390) + i,
-            evidence: 'e'.repeat(490),
-          },
-        ],
-      });
-    }
+    for (let i = 2; i < 20; i++)
+      memory.interrupted('Failure ' + i + 'p'.repeat(390));
     const prompt = memory.prompt(request);
     expect(prompt.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
     expect(prompt).toContain(goal);
@@ -89,29 +112,17 @@ describe('task progress and durable memory', () => {
       });
     }
     expect(memory.recoveryReason()).toContain('Two recent actions failed');
+    expect(memory.prompt('Continue')).toContain('Recent problems');
     memory.setPlan(
-      JSON.stringify({
-        reason: 'Try a different menu',
-        steps: memory.task!.plan.map((s) => ({
-          id: s.id,
-          title: s.title,
-          success_criteria: s.successCriteria,
-        })),
-      }),
+      ['Open report through the File menu -> Report text visible'],
+      'Try a different menu',
     );
     expect(memory.recoveryReason()).toBeNull();
   });
-  it('preserves paths, evidence and constraints after recent transcript turns are compacted', () => {
+
+  it('preserves the goal and recent problems after transcript turns are compacted', () => {
     const memory = setup();
-    memory.applyProgress({
-      notes: [
-        {
-          kind: 'artifact',
-          text: 'C:\\Reports\\final.txt',
-          evidence: 'Save dialog destination shows this exact path',
-        },
-      ],
-    });
+    memory.interrupted('Save dialog closed unexpectedly');
     for (let n = 0; n < 100; n++)
       memory.record('user' + n + 'x'.repeat(3000), 'answer' + n);
     expect(memory.context().length).toBeLessThanOrEqual(MAX_RECENT_TURNS);
@@ -123,18 +134,10 @@ describe('task progress and durable memory', () => {
           0,
         ),
     ).toBeLessThanOrEqual(MAX_CONTEXT_CHARS);
-    expect(memory.prompt('Continue')).toContain(
-      'Save report to C:\\Reports; do not send it.',
-    );
-    expect(memory.prompt('Continue')).toContain('C:\\Reports\\final.txt');
-    expect(memory.task!.notes[0].evidence).toMatchObject({
-      step: 1,
-      observationId: 'screen-1',
-      source: 'model_observation',
-    });
-    expect(memory.prompt('Continue')).toContain(
-      'Older transcript turns omitted',
-    );
+    const prompt = memory.prompt('Continue');
+    expect(prompt).toContain('Save report to C:\\Reports; do not send it.');
+    expect(prompt).toContain('Save dialog closed unexpectedly');
+    expect(prompt).toContain('Older transcript turns omitted');
   });
 
   it('does not turn submitted input into milestone completion without fresh evidence', () => {
@@ -143,20 +146,18 @@ describe('task progress and durable memory', () => {
     memory.submitted(input, memory.actionContext(input));
     expect(memory.task!.plan[0].status).toBe('in_progress');
     expect(memory.task!.receipts[0].outcome).toBe('unverified');
-    // An outcome for input from this same screenshot cannot be observed yet;
-    // it is dropped rather than failing the task, and the input stays unverified.
-    expect(memory.applyProgress({ outcome: observed }).outcome).toBeUndefined();
-    expect(memory.ignoredUpdates[0]).toContain('not been observed');
-    expect(memory.task!.receipts[0].outcome).toBe('unverified');
-    expect(() => memory.actionContext(input)).toThrow(
-      'review the previous input',
+    // Input cannot be judged on the screenshot it ran on.
+    expect(() => memory.applyProgress({ outcome: observed })).toThrow(
+      'awaiting review',
     );
+    expect(memory.task!.receipts[0].outcome).toBe('unverified');
+    expect(() => memory.actionContext(input)).toThrow('not been reviewed');
     memory.observe('screen-2');
     expect(() =>
       memory.applyProgress({
         milestones: [{ id, status: 'completed', evidence: 'Editor visible' }],
       }),
-    ).toThrow('include progress.outcome');
+    ).toThrow('did not work');
     memory.applyProgress({
       outcome: observed,
       milestones: [
@@ -177,120 +178,17 @@ describe('task progress and durable memory', () => {
     );
   });
 
-  it('requires all milestones and open questions to be resolved', () => {
-    const memory = setup();
-    memory.applyProgress({
-      milestones: memory.task!.plan.map((s) => ({
-        id: s.id,
-        status: 'completed',
-        evidence: 'Target state visible',
-      })),
-      notes: [
-        { kind: 'question', text: 'Which final filename does the user want?' },
-      ],
-    });
-    expect(memory.canComplete()).toBe(false);
-    const question = memory.task!.notes[0].id;
-    memory.observe('screen-2');
-    memory.applyProgress({
-      resolve_questions: [
-        {
-          id: question,
-          answer: 'The final filename is final.txt',
-          evidence: 'The Save dialog shows the selected filename final.txt',
-        },
-      ],
-      notes: [
-        {
-          kind: 'artifact',
-          text: 'final.txt',
-          evidence: 'User-selected filename visible in Save dialog',
-        },
-      ],
-    });
-    expect(memory.canComplete()).toBe(true);
-    expect(memory.task!.summary).toContain('The final filename is final.txt');
-  });
-
-  it('never evicts an unanswered question merely to make room for new notes', () => {
-    const memory = setup();
-    for (let i = 1; i <= 16; i++) {
-      memory.observe('question-screen-' + i);
-      memory.applyProgress({
-        notes: [{ kind: 'question', text: 'Open question ' + i }],
-      });
-    }
-    memory.observe('overflow-screen');
-    expect(() =>
-      memory.applyProgress({
-        notes: [{ kind: 'question', text: 'Question 17' }],
-      }),
-    ).toThrow('unresolved questions');
-    expect(memory.task!.notes).toHaveLength(16);
-    expect(memory.task!.notes.some((n) => n.text === 'Open question 1')).toBe(
-      true,
-    );
-    expect(memory.canComplete()).toBe(false);
-  });
-
-  it('ignores an outcome reported before any input instead of failing the task', () => {
+  it('derives outcomes and step completion from the flat report', () => {
     const memory = setup(),
-      id = memory.task!.plan[0].id;
-    memory.observe('screen-2');
-    const progress = memory.applyProgress({
-      next_milestone_id: id,
-      outcome: {
-        status: 'succeeded',
-        evidence: 'Desktop is visible with no browser window open yet',
-      },
-    });
-    expect(progress.outcome).toBeUndefined();
-    expect(progress.next_milestone_id).toBe(id);
-    expect(memory.ignoredUpdates[0]).toContain('no executed input');
-    expect(memory.task!.receipts).toHaveLength(0);
-    expect(memory.prompt('Continue')).toContain(
-      'Do NOT include progress.outcome',
-    );
-    expect(memory.actionContext(input, progress).milestoneId).toBe(id);
-  });
-
-  it('keeps an answer to an invented question ID as a fact instead of failing the task', () => {
-    const memory = setup();
-    memory.observe('screen-2');
-    memory.applyProgress({
-      resolve_questions: [
-        {
-          id: 'browser_location',
-          answer: 'Chrome browser icon is visible in the taskbar',
-          evidence: 'Chrome icon visible in taskbar',
-        },
-      ],
-      notes: [
-        {
-          id: 'made_up',
-          kind: 'fact',
-          text: 'Desktop is showing',
-          evidence: 'No windows open',
-        },
-      ],
-    });
-    expect(memory.ignoredUpdates.join(' ')).toContain('browser_location');
-    expect(memory.ignoredUpdates.join(' ')).toContain('made_up');
-    expect(memory.task!.notes.map((n) => [n.kind, n.text])).toEqual([
-      ['fact', 'Chrome browser icon is visible in the taskbar'],
-      ['fact', 'Desktop is showing'],
-    ]);
-    expect(memory.task!.notes.some((n) => n.id === 'made_up')).toBe(false);
-  });
-
-  it('simple format: derives outcomes and step completion from the flat report', () => {
-    const memory = setup(),
-      [first, second] = memory.task!.plan;
+      second = memory.task!.plan[1];
     // Nothing to review before the first input; the report cannot claim an outcome.
     expect(memory.progressFromReport({ last_action: 'worked' })).toEqual({});
-    expect(memory.prompt('Continue', true)).toContain('omit last_action');
+    expect(memory.prompt('Continue')).toContain('omit last_action');
     memory.submitted(input, memory.actionContext(input));
     memory.observe('screen-2');
+    expect(memory.prompt('Continue')).toContain(
+      'Set last_action from THIS screenshot',
+    );
     // Omitted last_action never blocks the next action: it becomes uncertain.
     const unclear = memory.progressFromReport(undefined);
     expect(unclear.outcome?.status).toBe('uncertain');
@@ -324,25 +222,10 @@ describe('task progress and durable memory', () => {
     ]);
     memory.applyProgress(finish);
     expect(memory.canComplete()).toBe(true);
-    expect(memory.prompt('Continue', true)).toContain('[' + first.id + '] done');
+    expect(memory.prompt('Continue')).toContain('1. done: Open report');
   });
 
-  it('falls back to the next unfinished milestone when next_milestone_id is stale', () => {
-    const memory = setup(),
-      [first, second] = memory.task!.plan;
-    memory.applyProgress({
-      milestones: [
-        { id: first.id, status: 'completed', evidence: 'Report text visible' },
-      ],
-    });
-    memory.observe('screen-2');
-    const progress = memory.applyProgress({ next_milestone_id: first.id });
-    expect(progress.next_milestone_id).toBeUndefined();
-    expect(memory.ignoredUpdates[0]).toContain('completed');
-    expect(memory.actionContext(input, progress).milestoneId).toBe(second.id);
-  });
-
-  it('applies progress atomically and rejects invented IDs, approval fields and unsupported facts', () => {
+  it('applies progress atomically and rejects unknown milestone IDs', () => {
     const memory = setup(),
       before = structuredClone(memory.task);
     expect(() =>
@@ -358,63 +241,25 @@ describe('task progress and durable memory', () => {
       }),
     ).toThrow('unknown milestone');
     expect(memory.task).toEqual(before);
-    expect(() =>
-      memory.applyProgress({
-        notes: [{ kind: 'fact', text: 'File was saved' }],
-      }),
-    ).toThrow();
-    expect(() => memory.applyProgress({ approved: true })).toThrow(
-      'unknown field',
-    );
-    expect(() =>
-      memory.applyProgress({
-        milestones: [
-          { id: memory.task!.plan[0].id, status: 'completed', evidence: '' },
-        ],
-      }),
-    ).toThrow();
   });
 
-  it('preserves completed work and requires a reason when revising a plan', () => {
+  it('keeps finished steps automatically when the model replans only the remaining work', () => {
     const memory = setup(),
-      [first, second] = memory.task!.plan;
-    memory.applyProgress({
-      milestones: [
-        { id: first.id, status: 'completed', evidence: 'Editor visible' },
-      ],
-    });
-    expect(() => memory.setPlan('Start everything again')).toThrow('reason');
-    expect(() =>
-      memory.setPlan(
-        JSON.stringify({
-          reason: 'Retry',
-          steps: [{ title: 'Save differently', success_criteria: 'Saved' }],
-        }),
-      ),
-    ).toThrow('cannot drop completed');
+      first = memory.task!.plan[0];
+    completeFirst(memory);
     memory.setPlan(
-      JSON.stringify({
-        reason: 'Save shortcut failed; use the File menu instead',
-        steps: [
-          {
-            id: first.id,
-            title: first.title,
-            success_criteria: first.successCriteria,
-          },
-          {
-            id: second.id,
-            title: 'Use File > Save As',
-            success_criteria: 'Save dialog confirms the original destination',
-          },
-        ],
-      }),
+      ['Use File > Save As -> Save dialog confirms the original destination'],
+      'Save shortcut failed; use the File menu instead',
     );
+    expect(memory.task!.plan).toHaveLength(2);
     expect(memory.task!.plan[0]).toMatchObject({
       id: first.id,
+      title: first.title,
       status: 'completed',
     });
     expect(memory.task!.plan[1]).toMatchObject({
-      id: second.id,
+      id: 'm2-1',
+      title: 'Use File > Save As',
       status: 'pending',
     });
     expect(memory.task!.revision).toBe(2);
@@ -422,30 +267,30 @@ describe('task progress and durable memory', () => {
       'Save report to C:\\Reports; do not send it.',
     );
     expect(memory.task!.planChanges[1].reason).toContain('shortcut failed');
+    // Repeating a finished step is harmless, and a missing reason is tolerated.
+    memory.setPlan(['Open report -> Report visible', 'Save a copy -> Copy saved']);
+    expect(memory.task!.plan.map((s) => [s.id, s.status])).toEqual([
+      [first.id, 'completed'],
+      ['m3-1', 'pending'],
+    ]);
+    expect(memory.task!.planChanges[2].reason).toBe('Plan revised');
+    expect(() => memory.setPlan(['Open report'], 'Nothing new')).toThrow(
+      'not finished yet',
+    );
+    expect(() =>
+      memory.setPlan(
+        Array.from({ length: 7 }, (_, i) => 'New step ' + i),
+        'Too long',
+      ),
+    ).toThrow('at most 6 remaining steps');
+    expect(memory.task!.revision).toBe(3);
   });
 
-  it('retains failed approaches and prioritizes file paths within a bounded summary', () => {
+  it('bounds retained failures and records controller blocks', () => {
     const memory = setup();
-    memory.applyProgress({
-      notes: [
-        {
-          kind: 'artifact',
-          text: 'C:\\Reports\\final.txt',
-          evidence: 'Destination visible',
-        },
-      ],
-    });
     for (let i = 2; i < 70; i++) {
       memory.observe('screen-' + i);
-      memory.applyProgress({
-        notes: [
-          {
-            kind: 'fact',
-            text: 'Observed fact ' + i + 'x'.repeat(200),
-            evidence: 'Visible value ' + i + 'y'.repeat(200),
-          },
-        ],
-      });
+      memory.interrupted('Observed failure ' + i + 'x'.repeat(390));
     }
     expect(memory.task!.notes.length).toBeLessThanOrEqual(MAX_NOTES);
     expect(
@@ -454,59 +299,19 @@ describe('task progress and durable memory', () => {
         0,
       ),
     ).toBeLessThanOrEqual(MAX_NOTE_CHARS);
-    expect(
-      memory.task!.notes.some((n) => n.text === 'C:\\Reports\\final.txt'),
-    ).toBe(true);
     expect(memory.task!.omittedNotes).toBeGreaterThan(0);
-    memory.blocked('Save dialog did not open', memory.task!.plan[1].id);
-    expect(memory.task!.plan[1].status).toBe('blocked');
+    memory.submitted(input, memory.actionContext(input));
+    memory.blocked('Save dialog did not open');
+    expect(memory.task!.plan[0].status).toBe('blocked');
     expect(memory.task!.summary).toContain('Save dialog did not open');
     expect(
       memory.task!.notes.find((n) => n.kind === 'failure')!.evidence.source,
     ).toBe('controller');
   });
 
-  it('updates a known note without inventing a new source or authorizing actions', () => {
-    const memory = setup();
-    memory.applyProgress({
-      notes: [
-        {
-          kind: 'artifact',
-          text: 'draft.txt',
-          evidence: 'Editor title draft.txt',
-        },
-      ],
-    });
-    const id = memory.task!.notes[0].id;
-    memory.observe('screen-2');
-    memory.applyProgress({
-      notes: [
-        {
-          id,
-          kind: 'artifact',
-          text: 'final.txt',
-          evidence: 'Editor title now final.txt',
-        },
-      ],
-    });
-    expect(memory.task!.notes).toHaveLength(1);
-    expect(memory.task!.notes[0]).toMatchObject({
-      id,
-      text: 'final.txt',
-      evidence: { step: 2 },
-    });
-    expect(() =>
-      memory.applyProgress({
-        notes: [{ id: 'fake', kind: 'artifact', text: 'x', evidence: 'x' }],
-      }),
-    ).toThrow();
-  });
-
   it('restores evidence and IDs but requires a new observation before any progress update', () => {
     const memory = setup();
-    memory.applyProgress({
-      notes: [{ kind: 'fact', text: 'Editor open', evidence: 'Title visible' }],
-    });
+    memory.interrupted('Window switched');
     const checkpoint: Message = {
       id: 'm',
       role: 'system',
@@ -521,15 +326,7 @@ describe('task progress and durable memory', () => {
     expect(restored.task!.notes).toEqual(memory.task!.notes);
     expect(() => restored.applyProgress({})).toThrow('no task observation');
     restored.observe('new-screen');
-    restored.applyProgress({
-      milestones: [
-        {
-          id: restored.task!.plan[0].id,
-          status: 'completed',
-          evidence: 'Editor still visible',
-        },
-      ],
-    });
+    completeFirst(restored);
     expect(restored.task!.plan[0].evidence!.step).toBe(2);
   });
 
@@ -549,32 +346,43 @@ describe('task progress and durable memory', () => {
     });
   });
 
-  it('a new task clears old milestones and memory, and varying metadata cannot evade repetition detection', () => {
+  it('old checkpoint questions cannot block completion, since nothing can answer them', () => {
     const memory = setup();
-    memory.applyProgress({
-      notes: [{ kind: 'artifact', text: 'old.txt', evidence: 'Title visible' }],
+    memory.task!.notes.push({
+      id: 'q1',
+      kind: 'question',
+      text: 'Which folder?',
+      evidence: { text: 'x', step: 0, observationId: '', source: 'legacy' },
     });
+    memory.applyProgress(memory.progressFromReport({}, 'Saved label visible'));
+    expect(memory.canComplete()).toBe(true);
+  });
+
+  it('a new task clears old milestones and memory, and varying reports cannot evade repetition detection', () => {
+    const memory = setup();
+    memory.interrupted('old failure');
     memory.start('Different goal', true);
     expect(memory.task!.notes).toEqual([]);
     expect(memory.task!.plan).toEqual([]);
     expect(memory.task!.receipts).toEqual([]);
     expect(actionSignature(input, 'screen')).toBe(
       actionSignature(
-        { ...input, progress: { expected_outcome: 'Different wording' } },
+        { ...input, report: { screen: 'Different wording' } },
         'screen',
       ),
     );
   });
 
-  it('rejects oversized plans and removes legacy approval settings', () => {
-    expect(() => parsePlan(Array(8).fill('step').join('\n'))).toThrow();
+  it('removes legacy approval and tool-format settings', () => {
     const settings = sanitizeSettings({
       autoApproveConfirmations: true,
+      simpleToolFormat: false,
       maxTurns: 999,
       actionDelayMs: -1,
       enablePlanning: 'yes',
     });
     expect(settings).not.toHaveProperty('autoApproveConfirmations');
+    expect(settings).not.toHaveProperty('simpleToolFormat');
     expect(settings.maxTurns).toBe(100);
     expect(settings.actionDelayMs).toBe(0);
     expect(settings.enablePlanning).toBe(true);

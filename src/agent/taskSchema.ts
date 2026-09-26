@@ -1,9 +1,7 @@
 import {
   Evidence,
   ExecutionReceipt,
-  MemoryNote,
   Milestone,
-  TaskProgress,
   TaskRecord,
 } from '../types';
 
@@ -22,7 +20,7 @@ const kinds = ['fact', 'artifact', 'failure', 'question'];
 
 export class TaskUpdateError extends Error {
   constructor(message: string) {
-    super(`Invalid task progress: ${message}`);
+    super(`Invalid task update: ${message}`);
   }
 }
 export function object(value: unknown): Record<string, unknown> {
@@ -63,121 +61,40 @@ function oneOf<T extends string>(
     throw new TaskUpdateError('invalid status or kind');
   return value as T;
 }
-function fields(data: Record<string, unknown>, allowed: string[]) {
-  if (Object.keys(data).some((key) => !allowed.includes(key)))
-    throw new TaskUpdateError('unknown field');
-}
 function unique(ids: string[]) {
   if (new Set(ids).size !== ids.length)
     throw new TaskUpdateError('duplicate IDs');
 }
-export function parseProgress(value: unknown): TaskProgress {
-  const data = object(value);
-  fields(data, [
-    'milestones',
-    'outcome',
-    'notes',
-    'resolve_questions',
-    'next_milestone_id',
-    'expected_outcome',
-  ]);
-  const result: TaskProgress = {};
-  if (data.milestones !== undefined) {
-    result.milestones = list(data.milestones, 7).map((value) => {
-      const row = object(value);
-      fields(row, ['id', 'status', 'evidence']);
-      return {
-        id: text(row.id, 40),
-        status: oneOf(row.status, milestoneStatuses.slice(1)),
-        evidence: text(row.evidence, 500),
-      };
-    });
-    unique(result.milestones.map((row) => row.id));
-  }
-  if (data.outcome !== undefined) {
-    const row = object(data.outcome);
-    fields(row, ['status', 'evidence']);
-    result.outcome = {
-      status: oneOf(row.status, ['succeeded', 'failed', 'uncertain']),
-      evidence: text(row.evidence, 500),
-    };
-  }
-  if (data.notes !== undefined) {
-    result.notes = list(data.notes, 6).map((value) => {
-      const row = object(value);
-      fields(row, ['id', 'kind', 'text', 'evidence']);
-      const kind = oneOf<MemoryNote['kind']>(row.kind, kinds);
-      return {
-        ...(row.id === undefined ? {} : { id: text(row.id, 40) }),
-        kind,
-        text: text(row.text, 400),
-        ...(row.evidence === undefined && kind === 'question'
-          ? {}
-          : { evidence: text(row.evidence, 500) }),
-      };
-    });
-    unique(result.notes.flatMap((row) => (row.id ? [row.id] : [])));
-  }
-  if (data.resolve_questions !== undefined) {
-    result.resolve_questions = list(data.resolve_questions, 6).map((value) => {
-      const row = object(value);
-      fields(row, ['id', 'answer', 'evidence']);
-      return {
-        id: text(row.id, 40),
-        answer: text(row.answer, 400),
-        evidence: text(row.evidence, 500),
-      };
-    });
-    unique(result.resolve_questions.map((row) => row.id));
-  }
-  if (data.next_milestone_id !== undefined)
-    result.next_milestone_id = text(data.next_milestone_id, 40);
-  if (data.expected_outcome !== undefined)
-    result.expected_outcome = text(data.expected_outcome, 400);
-  return result;
-}
-
 export interface PlanDraft {
   reason?: string;
-  steps: { id?: string; title: string; success_criteria: string }[];
+  steps: { title: string; successCriteria: string }[];
 }
-export function parsePlan(value: string): PlanDraft {
-  text(value, 8192);
-  if (value.trim().startsWith('{')) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      throw new TaskUpdateError('invalid plan JSON');
-    }
-    const data = object(parsed);
-    fields(data, ['reason', 'steps']);
-    const steps = list(data.steps, 7).map((value) => {
-      const row = object(value);
-      fields(row, ['id', 'title', 'success_criteria']);
-      return {
-        ...(row.id === undefined ? {} : { id: text(row.id, 40) }),
-        title: text(row.title, 240),
-        success_criteria: text(row.success_criteria, 400),
-      };
-    });
-    if (!steps.length)
-      throw new TaskUpdateError('plan needs one to seven milestones');
-    unique(steps.flatMap((row) => (row.id ? [row.id] : [])));
-    return {
-      steps,
-      ...(data.reason === undefined ? {} : { reason: text(data.reason, 500) }),
-    };
-  }
-  // Backward compatible plan text becomes pending milestones, never completed work.
-  const steps = value
-    .split('\n')
-    .map((s) => s.replace(/^\s*(?:\d+[.)]|[-*])\s*/, '').trim())
+// Each step is one line: "what to do -> what will be visible when it worked".
+// A newline-separated string (for example a numbered list in text) is also
+// accepted; without an arrow the step title doubles as its success condition.
+export function parsePlan(steps: unknown, reason?: unknown): PlanDraft {
+  const lines =
+    typeof steps === 'string'
+      ? text(steps, 8192, true).split('\n')
+      : Array.isArray(steps)
+        ? steps.map((s) => text(s, 400))
+        : [];
+  const rows = lines
+    .map((s) => s.replace(/^\s*(?:\d+[.)]\s*|[-*]\s+)/, '').trim())
     .filter(Boolean);
-  if (!steps.length || steps.length > 7)
-    throw new TaskUpdateError('plan needs one to seven milestones');
+  if (!rows.length || rows.length > 7)
+    throw new TaskUpdateError('a plan needs one to seven steps');
   return {
-    steps: steps.map((s) => ({ title: text(s, 240), success_criteria: s })),
+    steps: rows.map((row) => {
+      const [title, ...rest] = row.split(/\s*(?:->|→)\s*/);
+      return {
+        title: text(title, 400),
+        successCriteria: text(rest.join(' -> ').trim() || title, 400),
+      };
+    }),
+    ...(typeof reason === 'string' && reason.trim()
+      ? { reason: text(reason, 500) }
+      : {}),
   };
 }
 

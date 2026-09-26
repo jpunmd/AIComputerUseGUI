@@ -1,16 +1,11 @@
 //! Parse only final model output. Reasoning is never an execution channel.
 use crate::types::*;
 
-/// Share one schema with the tool definition shown to the model. `simple`
-/// selects the flat format (no nested progress object) for small models.
-pub fn response_format(coordinate_base: f64, simple: bool) -> serde_json::Value {
-    let source = if simple {
-        include_str!("../../src/agent/computer-tool-simple.json")
-    } else {
-        include_str!("../../src/agent/computer-tool.json")
-    };
+/// Share one schema with the tool definition shown to the model.
+pub fn response_format(coordinate_base: f64) -> serde_json::Value {
     let tool: serde_json::Value =
-        serde_json::from_str(source).expect("bundled computer tool schema must be valid JSON");
+        serde_json::from_str(include_str!("../../src/agent/computer-tool.json"))
+            .expect("bundled computer tool schema must be valid JSON");
     let mut arguments = tool["function"]["parameters"].clone();
     for field in ["coordinate", "start_coordinate", "end_coordinate"] {
         arguments["properties"][field]["items"]["maximum"] = coordinate_base.into();
@@ -32,17 +27,12 @@ pub fn response_format(coordinate_base: f64, simple: bool) -> serde_json::Value 
     })
 }
 
-pub fn structured_prompt(prompt: &str, simple: bool) -> String {
+pub fn structured_prompt(prompt: &str) -> String {
     // The grammar emits JSON, so examples must not teach XML-wrapped output.
     let prompt = prompt
         .replace("<tool_call>", "")
         .replace("</tool_call>", "");
-    let nesting = if simple {
-        ""
-    } else {
-        " Keep next_milestone_id and expected_outcome inside arguments.progress."
-    };
-    format!("{prompt}\n\nResponse transport: return exactly one JSON object with name=computer and arguments matching the supplied response schema. This overrides earlier formatting instructions: no XML tags, Markdown fences or prose outside the object. For an answer or an ambiguous/missing target, use action=none and put the explanation in arguments.text.{nesting}")
+    format!("{prompt}\n\nResponse transport: return exactly one JSON object with name=computer and arguments matching the supplied response schema. This overrides earlier formatting instructions: no XML tags, Markdown fences or prose outside the object. For an answer or an ambiguous/missing target, use action=none and put the explanation in arguments.text.")
 }
 
 fn schema_error(context: &str, error: serde_json::Error) -> String {
@@ -101,7 +91,6 @@ pub fn parse_final_action(text: &str) -> Result<ActionResult, String> {
     // Prose is an answer, never proof that a computer task is complete.
     Ok(ActionResult {
         action: "none".into(),
-        progress: None,
         report: None,
         arguments: ActionResultArguments {
             text: Some(text.into()),
@@ -143,50 +132,32 @@ pub fn parse_response(choice: &ChatChoice, final_text: &str) -> Result<ActionRes
 mod tests {
     use super::*;
     #[test]
-    fn misplaced_progress_fields_are_rejected_and_correct_nesting_passes() {
-        let mut call = serde_json::json!({"name":"computer","arguments":{
-            "action":"click","coordinate":[308,977],
-            "progress":{"outcome":{"status":"failed","evidence":"Desktop is still visible"},
-                "milestones":[{"id":"m1-1","status":"in_progress","evidence":"Browser is not open"}]},
-            "next_milestone_id":"m1-1","expected_outcome":"Chrome browser window opens"
-        }});
-        assert!(parse_json_action(&call.to_string())
-            .unwrap_err()
-            .contains("unknown field"));
-        for key in ["next_milestone_id", "expected_outcome"] {
-            let value = call["arguments"]
-                .as_object_mut()
-                .unwrap()
-                .remove(key)
-                .unwrap();
-            call["arguments"]["progress"][key] = value;
-        }
-        let action = parse_final_action(&call.to_string()).unwrap();
-        crate::validation::validate(&action, 1000.0, true).unwrap();
-        let format = response_format(1000.0, false);
+    fn schema_is_flat_and_nested_progress_is_rejected() {
+        let format = response_format(1000.0);
         let args = &format["json_schema"]["schema"]["properties"]["arguments"];
         assert_eq!(args["additionalProperties"], false);
-        assert!(args["properties"].get("next_milestone_id").is_none());
-        assert!(args["properties"]["progress"]["properties"]
-            .get("next_milestone_id")
-            .is_some());
+        assert!(args["properties"].get("progress").is_none());
+        for field in ["screen", "last_action", "step_done", "steps", "reason"] {
+            assert!(args["properties"].get(field).is_some());
+        }
+        assert_eq!(args["properties"]["steps"]["maxItems"], 7);
         assert_eq!(
-            response_format(500.0, false)["json_schema"]["schema"]["properties"]["arguments"]
+            response_format(500.0)["json_schema"]["schema"]["properties"]["arguments"]
                 ["properties"]["coordinate"]["items"]["maximum"],
             500.0
         );
+        for call in [
+            r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"progress":{"next_milestone_id":"m1-1"}}}"#,
+            r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"next_milestone_id":"m1-1"}}"#,
+        ] {
+            assert!(parse_json_action(call)
+                .unwrap_err()
+                .contains("unknown field"));
+        }
     }
 
     #[test]
-    fn simple_format_is_flat_and_parses_into_a_report() {
-        let args =
-            &response_format(1000.0, true)["json_schema"]["schema"]["properties"]["arguments"];
-        assert_eq!(args["additionalProperties"], false);
-        assert!(args["properties"].get("progress").is_none());
-        for field in ["screen", "last_action", "step_done"] {
-            assert!(args["properties"].get(field).is_some());
-        }
-        assert!(!structured_prompt("x", true).contains("progress"));
+    fn flat_fields_parse_into_a_report() {
         let action = parse_json_action(r#"{"name":"computer","arguments":{"action":"type","text":"weather","screen":"Chrome address bar focused","last_action":"worked","step_done":true}}"#).unwrap();
         crate::validation::validate(&action, 1000.0, true).unwrap();
         let report = action.report.unwrap();
@@ -196,28 +167,34 @@ mod tests {
             parse_json_action(r#"{"name":"computer","arguments":{"action":"key","key":"enter"}}"#)
                 .unwrap();
         assert!(plain.report.is_none());
-        assert!(parse_json_action(r#"{"name":"computer","arguments":{"action":"key","key":"enter","last_action":"maybe"}}"#).is_err());
     }
+
+    #[test]
+    fn plan_steps_parse_and_round_trip_without_optional_nulls() {
+        let action = parse_json_action(r#"{"name":"computer","arguments":{"action":"plan","steps":["Open Chrome -> a Chrome window is visible","Search -> results shown"],"reason":"Taskbar icon did not respond"}}"#).unwrap();
+        crate::validation::validate(&action, 1000.0, false).unwrap();
+        assert_eq!(action.arguments.steps.as_ref().unwrap().len(), 2);
+        let serialized = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            serialized["arguments"]["reason"],
+            "Taskbar icon did not respond"
+        );
+        assert!(serialized["arguments"].get("text").is_none());
+        assert!(serialized.get("report").is_none());
+        assert!(parse_json_action(
+            r#"{"name":"computer","arguments":{"action":"plan","steps":[{"title":"Open Chrome"}]}}"#
+        )
+        .is_err());
+    }
+
     #[test]
     fn constrained_prompt_uses_json_examples_and_can_report_missing_targets() {
-        let prompt = structured_prompt(
-            "Example: <tool_call>{\"name\":\"computer\"}</tool_call>",
-            false,
-        );
+        let prompt = structured_prompt("Example: <tool_call>{\"name\":\"computer\"}</tool_call>");
         assert!(!prompt.contains("<tool_call>"));
         assert!(prompt.contains("action=none"));
-        assert!(prompt.contains("inside arguments.progress"));
+        assert!(!prompt.contains("progress"));
     }
-    #[test]
-    fn local_qwen_progress_responses_pass_wire_and_action_validation() {
-        let outputs: Vec<String> =
-            serde_json::from_str(include_str!("../../tests/fixtures/qwen-progress.json")).unwrap();
-        for output in outputs {
-            let action = parse_final_action(&output).unwrap();
-            crate::validation::validate(&action, 1000.0, true).unwrap();
-            assert!(action.progress.is_some());
-        }
-    }
+
     #[test]
     fn schema_errors_name_the_invalid_field_or_value_for_repair() {
         let unknown = parse_json_action(
@@ -225,12 +202,12 @@ mod tests {
         )
         .unwrap_err();
         assert!(unknown.contains("unknown field `keys`"));
-        let status = parse_json_action(r#"{"name":"computer","arguments":{"action":"click","coordinate":[400,980],"progress":{"milestones":[{"id":"m1-1","status":"pending","evidence":"Desktop visible"}]}}}"#).unwrap_err();
-        assert!(status.contains("unknown variant `pending`"));
-        assert!(status.contains("in_progress"));
+        let status = parse_json_action(r#"{"name":"computer","arguments":{"action":"key","key":"enter","last_action":"maybe"}}"#).unwrap_err();
+        assert!(status.contains("unknown variant `maybe`"));
+        assert!(status.contains("worked"));
         let malformed = parse_json_action("{\"name\":").unwrap_err();
         assert!(malformed.contains("line 1"));
-        let long = serde_json::json!({"name":"computer","arguments":{"action":"wait","progress":{"next_milestone_id":true}}, "💥".repeat(5000):true});
+        let long = serde_json::json!({"name":"computer","arguments":{"action":"wait","step_done":"yes"}, "💥".repeat(5000):true});
         assert!(
             parse_json_action(&long.to_string())
                 .unwrap_err()
@@ -240,22 +217,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn progress_is_typed_and_round_trips_without_optional_nulls() {
-        let call = serde_json::json!({"name":"computer","arguments":{"action":"done","text":"Saved","progress":{"milestones":[{"id":"m1-1","status":"completed","evidence":"Saved label visible"}],"notes":[{"kind":"question","text":"Which folder next?"}]}}});
-        let action = parse_json_action(&call.to_string()).unwrap();
-        let serialized = serde_json::to_value(&action).unwrap();
-        assert_eq!(serialized["progress"]["milestones"][0]["id"], "m1-1");
-        assert!(serialized["progress"].get("outcome").is_none());
-        assert!(serialized["progress"]["notes"][0].get("evidence").is_none());
-        assert!(serialized["arguments"].get("progress").is_none());
-        let mut forbidden = call.clone();
-        forbidden["arguments"]["progress"]["approved"] = true.into();
-        assert!(parse_json_action(&forbidden.to_string()).is_err());
-        let mut invalid = call;
-        invalid["arguments"]["progress"]["milestones"][0]["status"] = "authorized".into();
-        assert!(parse_json_action(&invalid.to_string()).is_err());
-    }
     #[test]
     fn prose_and_negated_completion_are_not_done() {
         for text in [

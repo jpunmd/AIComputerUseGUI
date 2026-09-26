@@ -7,9 +7,6 @@ pub fn validate(
     coordinate_base: f64,
     allow_box: bool,
 ) -> Result<(), String> {
-    if let Some(progress) = &action.progress {
-        validate_progress(progress)?;
-    }
     if let Some(screen) = action.report.as_ref().and_then(|r| r.screen.as_deref()) {
         if screen.trim().is_empty() || screen.chars().count() > 500 || screen.contains('\0') {
             return Err("Invalid or oversized screen description".into());
@@ -51,13 +48,31 @@ pub fn validate(
             point(args.start_coordinate.as_ref(), false)?;
             point(args.end_coordinate.as_ref(), false)?;
         }
-        "type" | "confirm" | "done" | "plan" => {
+        "type" | "confirm" | "done" => {
             if args.text.as_ref().is_none_or(|s| s.trim().is_empty()) {
                 return Err(
                     "This action requires text (done must describe completion evidence)".into(),
                 );
             }
         }
+        "plan" => match &args.steps {
+            Some(steps) => {
+                if steps.is_empty() || steps.len() > 7 {
+                    return Err("A plan needs one to seven steps".into());
+                }
+                if steps
+                    .iter()
+                    .any(|s| s.trim().is_empty() || s.chars().count() > 400 || s.contains('\0'))
+                {
+                    return Err(
+                        "Each plan step must be non-empty text of at most 400 characters".into(),
+                    );
+                }
+            }
+            // Tolerate a step list written as lines of text; the controller parses it.
+            None if args.text.as_ref().is_some_and(|s| !s.trim().is_empty()) => {}
+            None => return Err("A plan requires steps".into()),
+        },
         "key" => {
             let key = args.key.as_ref().ok_or("Missing key")?;
             if key.is_empty() || key.len() > 64 || key.split('+').count() > 5 {
@@ -94,8 +109,16 @@ pub fn validate(
                 action.action.as_str(),
                 "type" | "confirm" | "done" | "none" | "plan"
             ))
+        || ((args.steps.is_some() || args.reason.is_some()) && action.action != "plan")
     {
         return Err("Arguments do not match the action type".into());
+    }
+    if args
+        .reason
+        .as_ref()
+        .is_some_and(|s| s.trim().is_empty() || s.chars().count() > 500 || s.contains('\0'))
+    {
+        return Err("Plan reason must be non-empty text of at most 500 characters".into());
     }
     Ok(())
 }
@@ -129,62 +152,6 @@ pub fn is_mutating(action: &ActionResult) -> bool {
 
 pub fn pixel(value: f64, base: f64, size: u32, origin: i32) -> i32 {
     origin + (value / base * size.saturating_sub(1) as f64).round() as i32
-}
-
-fn validate_progress(progress: &crate::types::TaskProgress) -> Result<(), String> {
-    use crate::types::NoteKind;
-    let text = |value: &str, max: usize| {
-        if value.trim().is_empty() || value.chars().count() > max || value.contains('\0') {
-            Err("Invalid or oversized task progress text".to_string())
-        } else {
-            Ok(())
-        }
-    };
-    if let Some(rows) = &progress.milestones {
-        if rows.len() > 7 {
-            return Err("Too many milestone updates".into());
-        }
-        for row in rows {
-            text(&row.id, 40)?;
-            text(&row.evidence, 500)?;
-        }
-    }
-    if let Some(outcome) = &progress.outcome {
-        text(&outcome.evidence, 500)?;
-    }
-    if let Some(notes) = &progress.notes {
-        if notes.len() > 6 {
-            return Err("Too many memory notes".into());
-        }
-        for note in notes {
-            text(&note.text, 400)?;
-            if let Some(id) = &note.id {
-                text(id, 40)?;
-            }
-            match &note.evidence {
-                Some(evidence) => text(evidence, 500)?,
-                None if note.kind == NoteKind::Question => (),
-                None => return Err("Memory facts require observed evidence".into()),
-            }
-        }
-    }
-    if let Some(ids) = &progress.resolve_questions {
-        if ids.len() > 6 {
-            return Err("Too many question resolutions".into());
-        }
-        for resolution in ids {
-            text(&resolution.id, 40)?;
-            text(&resolution.answer, 400)?;
-            text(&resolution.evidence, 500)?;
-        }
-    }
-    if let Some(id) = &progress.next_milestone_id {
-        text(id, 40)?;
-    }
-    if let Some(expected) = &progress.expected_outcome {
-        text(expected, 400)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -228,6 +195,28 @@ mod tests {
         );
         drop_commentary_text(&mut mixed);
         assert!(validate(&mixed, 1000.0, false).is_err());
+    }
+    #[test]
+    fn plans_carry_bounded_steps_that_no_input_action_accepts() {
+        let plan = action(
+            serde_json::json!({"action":"plan","arguments":{"steps":["Open Chrome -> window visible"],"reason":"Retry"}}),
+        );
+        assert!(validate(&plan, 1000.0, false).is_ok());
+        let lines =
+            action(serde_json::json!({"action":"plan","arguments":{"text":"1. Open Chrome"}}));
+        assert!(validate(&lines, 1000.0, false).is_ok());
+        for value in [
+            serde_json::json!({"action":"plan","arguments":{}}),
+            serde_json::json!({"action":"plan","arguments":{"steps":[]}}),
+            serde_json::json!({"action":"plan","arguments":{"steps":vec!["step"; 8]}}),
+            serde_json::json!({"action":"plan","arguments":{"steps":[" "]}}),
+            serde_json::json!({"action":"plan","arguments":{"steps":["x".repeat(401)]}}),
+            serde_json::json!({"action":"plan","arguments":{"steps":["ok"],"reason":""}}),
+            serde_json::json!({"action":"key","arguments":{"key":"enter","steps":["Press enter"]}}),
+            serde_json::json!({"action":"click","arguments":{"coordinate":[1,1],"reason":"x"}}),
+        ] {
+            assert!(validate(&action(value), 1000.0, false).is_err());
+        }
     }
     #[test]
     fn pixels_include_monitor_origin_and_remain_inside_display() {

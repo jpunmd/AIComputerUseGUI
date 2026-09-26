@@ -192,7 +192,7 @@ export function useAgent() {
       step?: number,
     ) => {
       const boxFirst = settings.boxRefine && !settings.zoomRefine;
-      const prompt = memory.current.prompt(query, settings.simpleToolFormat);
+      const prompt = memory.current.prompt(query);
       const response = await invoke<AgentResponse>('process_computer_use', {
         runId: assertRunning(),
         screenshotBase64: shot.base64_image,
@@ -202,13 +202,12 @@ export function useAgent() {
         displayWidth: shot.image_width,
         displayHeight: shot.image_height,
         systemPrompt:
-          buildSystemPrompt(settings.systemPrompt, settings.simpleToolFormat) +
+          buildSystemPrompt(settings.systemPrompt) +
           (boxFirst
             ? '\nFor click actions, coordinate must be a tight [x0,y0,x1,y1] bounding box in 0–1000 space.'
             : ''),
         enableThinking: settings.enableThinking,
         priorTurns: memory.current.context(),
-        simpleTools: settings.simpleToolFormat,
       });
       assertRunning();
       if (response.format_warning) message('system', response.format_warning);
@@ -247,18 +246,13 @@ export function useAgent() {
       if (settings.zoomRefine && click && point?.length === 2) {
         const plan = memory.current.task?.plan || [];
         const target =
-          plan.find(
-            (s) => s.id === response.action.progress?.next_milestone_id,
-          ) ||
           plan.find((s) => s.status === 'in_progress') ||
           plan.find((s) => s.status === 'pending');
         const targetContext = [
           'Original task: ' + (memory.current.task?.goal || query),
           target ? 'Current milestone: ' + target.title : '',
           'Expected result of this click: ' +
-            (response.action.progress?.expected_outcome ||
-              target?.successCriteria ||
-              query),
+            (target?.successCriteria || query),
         ]
           .filter(Boolean)
           .join('\n');
@@ -328,8 +322,8 @@ export function useAgent() {
   const performAction = useCallback(
     async (action: ActionResult) => {
       const id = assertRunning();
-      const context = memory.current.actionContext(action, action.progress);
-      // Model-authored memory is never part of an executable proposal/approval.
+      const context = memory.current.actionContext(action);
+      // Model-authored reports are never part of an executable proposal/approval.
       const executable = {
         action: action.action,
         arguments: action.arguments,
@@ -462,9 +456,9 @@ export function useAgent() {
           const planning =
             memory.current.task?.status === 'planning' || requireReplan;
           const phasePrompt = requireReplan
-            ? 'The previous approach repeated without progress. Return ONLY a plan action with a reason and a different approach for unfinished milestones. Preserve completed milestones and original constraints. Do not propose input.'
+            ? 'The previous approach repeated without progress. Return ONLY a plan action: reason (what went wrong) and steps with a different approach for the work still to do. Finished steps are kept automatically. Keep the original constraints. Do not propose input.'
             : planning
-              ? 'Make a short plan for the original task. Return only a plan action with text JSON containing one to seven steps, each with title and observable success_criteria. Do not act yet.'
+              ? 'Make a short plan for the original task. Return only a plan action whose steps are one to seven short strings like "Open Chrome -> a Chrome window is visible". Do not act yet.'
               : verifying
                 ? 'Verify completion against every requirement of the original task using this NEW screenshot. Return done with observed evidence only if all requirements are met; otherwise take the next necessary action or explain what is missing.'
                 : next;
@@ -478,37 +472,23 @@ export function useAgent() {
               throw new TaskUpdateError(
                 'return a plan before attempting input',
               );
-            if (
-              settings.simpleToolFormat &&
-              !response.action.progress &&
-              memory.current.task
-            ) {
-              // Simple format: the controller derives milestones/outcomes
-              // from the flat report instead of asking the model for them.
-              response.action.progress = memory.current.progressFromReport(
-                response.action.report,
-                response.action.action === 'done'
-                  ? response.action.arguments.text || ''
-                  : undefined,
+            if (memory.current.task)
+              // The controller derives milestones/outcomes from the flat
+              // report instead of asking the model for them.
+              memory.current.applyProgress(
+                memory.current.progressFromReport(
+                  response.action.report,
+                  response.action.action === 'done'
+                    ? response.action.arguments.text || ''
+                    : undefined,
+                ),
               );
+            if (response.action.action === 'plan') {
+              const args = response.action.arguments;
+              memory.current.setPlan(args.steps ?? args.text, args.reason);
             }
-            if (response.action.progress) {
-              // Use the accepted progress so dropped fields (for example a
-              // stale next_milestone_id) never reach action targeting.
-              response.action.progress = memory.current.applyProgress(
-                response.action.progress,
-              );
-              const ignored = memory.current.ignoredUpdates;
-              if (ignored.length && settings.debugMode)
-                message('system', 'Ignored model bookkeeping: ' + ignored.join('; '));
-            }
-            if (response.action.action === 'plan')
-              memory.current.setPlan(response.action.arguments.text || '');
             if (isInput(response.action))
-              memory.current.actionContext(
-                response.action,
-                response.action.progress,
-              );
+              memory.current.actionContext(response.action);
             publishTask();
             repair = 0;
           } catch (err) {
@@ -557,12 +537,12 @@ export function useAgent() {
             if (!memory.current.canComplete()) {
               if (completionRepair++ >= 1)
                 throw new Error(
-                  'Completion is blocked by unfinished milestones or unresolved memory:\n' +
+                  'Completion is blocked by unfinished milestones:\n' +
                     memory.current.completionGaps(),
                 );
               verifying = false;
               next =
-                'Completion is not yet supported. Review the current screen, update progress and resolve these gaps, or explain what is blocked:\n' +
+                'Completion is not yet supported. Review the current screen and finish these steps (set step_done when one is visibly done), or explain what is blocked:\n' +
                 memory.current.completionGaps();
               turn++;
               continue;
@@ -607,10 +587,7 @@ export function useAgent() {
               ? 'The same action and screen repeated without progress.'
               : memory.current.recoveryReason();
           if (recovery) {
-            memory.current.blocked(
-              recovery,
-              action.progress?.next_milestone_id,
-            );
+            memory.current.blocked(recovery);
             publishTask();
             if (replans++ >= 1)
               throw new Error(
@@ -627,7 +604,7 @@ export function useAgent() {
             assertRunning();
             if (isScreenChanged(err)) {
               const outcome = err.input_may_have_been_sent
-                ? 'Some input may have been sent. Inspect the new screen and report progress.outcome before any further input. Do not blindly repeat the previous action.'
+                ? 'Some input may have been sent. Inspect the new screen and set last_action before any further input. Do not blindly repeat the previous action.'
                 : 'The proposed action was NOT executed. Do not report an outcome for that rejected proposal.';
               const reason = errorMessage(err) + ' ' + outcome;
               memory.current.interrupted(reason);
@@ -664,7 +641,6 @@ export function useAgent() {
             if (!stopped.current)
               memory.current.blocked(
                 'Input outcome not confirmed: ' + errorMessage(err),
-                action.progress?.next_milestone_id,
               );
             throw err;
           }

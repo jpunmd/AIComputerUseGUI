@@ -86,7 +86,6 @@ async fn process_computer_use(
     system_prompt: String,
     enable_thinking: Option<bool>,
     prior_turns: Option<Vec<types::PriorTurn>>,
-    simple_tools: Option<bool>,
     state: Control<'_>,
 ) -> Result<AgentResponse, String> {
     let token = state.token(&run_id)?;
@@ -101,7 +100,6 @@ async fn process_computer_use(
         enable_thinking.unwrap_or(false),
         prior_turns,
         1000.0,
-        simple_tools.unwrap_or(false),
         &token,
     )
     .await
@@ -158,8 +156,8 @@ fn prepare_action(
     }
     let action: ActionResult =
         serde_json::from_str(&action).map_err(|_| "Invalid action payload")?;
-    if action.progress.is_some() {
-        return Err("Task progress cannot be submitted to the input executor".into());
+    if action.report.is_some() {
+        return Err("Model reports cannot be submitted to the input executor".into());
     }
     validation::validate(&action, 1000.0, false)?;
     actions::validate_keys(&action).map_err(|e| e.to_string())?;

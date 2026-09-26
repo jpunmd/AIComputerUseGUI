@@ -9,7 +9,7 @@ A Windows Tauri application that lets a local vision-language model propose and 
 | **Qwen 3.8** (e.g. 27B) | Main development model, served locally by llama.cpp |
 | **Qwen 3.8 Flash-Next** | Faster option for the same workflow |
 
-Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint, and enter the exact model ID the server reports. Keep **Simple Tool Format** on (the default) for these and other local models: it asks for a flat tool call that they follow far more reliably than the full progress protocol. Thinking mode is on by default and its reasoning is shown expanded.
+Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint, and enter the exact model ID the server reports. The tool call is deliberately flat (no nested objects; a plan is a list of strings) because local models follow that far more reliably than nested bookkeeping. Thinking mode is on by default and its reasoning is shown expanded.
 
 ## Getting started
 
@@ -36,12 +36,12 @@ Enable **Precision clicks** in the task toolbar to check each click in a magnifi
 ## Staying on task
 
 - The original goal and up to seven milestones stay in every multi-turn request. Each milestone has a stable ID, observable success condition, status (pending, in progress, completed, or blocked), input count, and evidence from a numbered screen observation.
-- The model supplies compact progress updates alongside its next action, using the same inference request. Input receipts remain unverified until a later observation reports success, failure, or uncertainty. The controller requires that review before another input action.
-- Durable memory keeps model-extracted facts, exact paths/values, failed approaches, and open questions. Each note records its evidence and source step. Known notes can be updated and answered questions resolved by ID. New tasks clear this memory; Continue and saved checkpoints retain it.
-- Memory is bounded to 16 notes / 8,000 text-and-evidence characters, eight input receipts, and five plan revisions. Paths and unresolved questions receive priority during compaction. The task prompt is capped at 32,000 JavaScript string characters, preserving the original goal, plan, current request, and latest receipt. At most six recent conversation turns / 24,000 characters are supplied separately. Only the current screenshot is sent.
-- Two reported failures on the same milestone, or three identical consecutive action/screenshot pairs, trigger one plan revision before further input. A revision must explain the changed approach and preserve completed milestones. Continued lack of progress pauses the run. Turn/time limits still apply.
+- The model adds up to three flat fields to its next action in the same inference request: `screen`, `last_action` and `step_done`. The controller turns them into milestone and input-outcome records. An input stays unverified until a later screenshot is reviewed; if the model does not say whether it worked, it is recorded as uncertain rather than blocking the next action.
+- Durable memory keeps failed approaches (failed actions, controller interruptions, and blocks), each with its evidence and source step. The three most recent are shown to the model. New tasks clear this memory; Continue and saved checkpoints retain it.
+- Memory is bounded to 16 notes / 8,000 text-and-evidence characters, eight input receipts, and five plan revisions. Whole notes are compacted, oldest first. The task prompt is capped at 32,000 JavaScript string characters, preserving the original goal, plan, current request, and latest receipt. At most six recent conversation turns / 24,000 characters are supplied separately. Only the current screenshot is sent.
+- Two reported failures on the same milestone, or three identical consecutive action/screenshot pairs, trigger one plan revision before further input. A revision lists only the remaining work, with a reason; finished milestones are kept automatically. Continued lack of progress pauses the run. Turn/time limits still apply.
 - When a window, focus, or display change invalidates a proposed action, the agent waits briefly, takes a new screenshot, and chooses a new action automatically. It can recover from Task View or a window switch without losing its goal or task permission. Possible partial input is reviewed before further input; stale coordinates are never replayed. Recovery allows three consecutive retries and six total per run before pausing. **Allow once** still applies only to its original proposal.
-- A `done` claim cannot complete a task with unfinished milestones, open questions, or unreviewed input. Once those are resolved, completion requires a second `done` decision against a new screen. This is model judgment, not independent proof of success.
+- A `done` claim completes the remaining milestones unless the last action failed, but never finishes the task by itself: completion requires a second `done` decision against a new screen, with no unreviewed input. This is model judgment, not independent proof of success.
 - The expandable task panel shows milestone statuses, success conditions, evidence, durable notes, and recent input results. Legacy text-only plans load as pending milestones; old execution summaries are treated as unverified history.
 
 See [task progress and memory protocol](docs/task-memory.md) for examples, migration behavior, and limits.
@@ -63,7 +63,6 @@ Click the intended target before typing or pressing keys. If it changes or becom
 | API endpoint / model ID | Local or explicitly chosen remote vision server |
 | System prompt | Editable instructions; mandatory execution rules are appended |
 | Plan Before Acting | Generate milestones before a new multi-turn task |
-| Simple Tool Format | On by default. Flat tool call for small local models; off selects the full progress/memory protocol |
 | Thinking mode | On by default, shown expanded. Reasoning is displayed separately and never executed or replayed |
 | Screenshot Max Dimension | Longest side of the image sent to the model (256–3840 pixels). Default and recommended: 1920 (1080p) |
 | Precision clicks / box mode | Off by default. Check a magnified crop of the same observation; inconclusive refinement stops execution |
@@ -94,13 +93,12 @@ If the server explicitly rejects structured output as unsupported (HTTP 400/422)
 
 One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Rejection messages include the specific validation error and retain the rejected output for inspection. The agent gets two format-correction attempts. A `text` field on an action that does not type (for example a description on a click or key press) is discarded as commentary instead of rejecting the response. Plain text needs user attention and never implies completion; under constrained output use `action: "none"` with `text` for explanations.
 
-With **Simple Tool Format** on (the default), the schema is `src/agent/computer-tool-simple.json`. It has no `progress` object, only three optional flat fields: `screen` (one sentence about the current screenshot), `last_action` (`worked`, `failed` or `unclear`) and `step_done` (the current plan step's success condition is visible). The controller turns these into milestone and outcome records. An omitted `last_action` is recorded as uncertain, so it never blocks the next action. `step_done` completes the current step unless the last action failed. `done` completes the remaining steps, and the controller still confirms completion on a fresh screenshot. Notes and questions are not available in this format.
+Every field sits directly in `arguments`. Any action may add three optional fields: `screen` (one sentence about the current screenshot), `last_action` (`worked`, `failed` or `unclear`) and `step_done` (the current plan step's success condition is visible). The controller turns these into milestone and outcome records, and owns all milestone IDs. An omitted `last_action` is recorded as uncertain, so it never blocks the next action. `step_done` completes the current step unless the last action failed. `done` completes the remaining steps, and the controller still confirms completion on a fresh screenshot.
 
 ```json
 {"name":"computer","arguments":{"action":"type","text":"weather Philadelphia","screen":"Chrome address bar is focused","last_action":"worked","step_done":true}}
+{"name":"computer","arguments":{"action":"plan","steps":["Open Chrome -> a Chrome window is visible","Search for weather Philadelphia -> the forecast is shown"]}}
 ```
-
-With the full protocol, progress metadata goes inside `arguments.progress`. In particular, `next_milestone_id` and `expected_outcome` belong alongside `outcome` and `milestones` inside that object, never directly under `arguments`.
 
 | Action | Arguments |
 | --- | --- |
@@ -110,7 +108,7 @@ With the full protocol, progress metadata goes inside `arguments.progress`. In p
 | `type` | `text` (up to 8 KiB UTF-8) |
 | `key` | `key`, such as `ctrl+s` |
 | `wait`, `screenshot` | No arguments |
-| `plan` | `text`: JSON containing `steps` with `title` and `success_criteria`; revised plans also require `reason` and retained milestone IDs. Legacy newline plans remain accepted. |
+| `plan` | `steps`: one to seven strings, each `what to do -> what will be visible when it worked` (without an arrow the step doubles as its own success condition). To revise, send `reason` and only the remaining steps; finished steps are kept. A step list written as lines of `text` is also accepted. |
 | `confirm` | `text`: a question; does not authorize subsequent input itself |
 | `done` | `text`: observed completion evidence |
 

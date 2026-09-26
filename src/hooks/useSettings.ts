@@ -63,7 +63,6 @@ export const DEFAULT_SETTINGS: Settings = {
   debugMode: false, // Developer instruments (calibration probe) hidden by default
   saveScreenshotsInSessions: false, // Opt in to persisting desktop images.
   reviewEachAction: true, // Ask before each mouse/keyboard action unless the user saves direct control as the default.
-  simpleToolFormat: true, // Flat tool call that small local models follow reliably; off = full progress/memory protocol.
   theme: osTheme(), // First launch matches the OS; after that the saved choice is used.
   showSessions: true, // Saved-sessions sidebar open by default.
 };

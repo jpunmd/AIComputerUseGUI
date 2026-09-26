@@ -138,7 +138,6 @@ pub async fn call_computer_use_api(
     enable_thinking: bool,
     prior_turns: Option<Vec<PriorTurn>>,
     coordinate_base: f64,
-    simple_tools: bool,
     cancel: &CancellationToken,
 ) -> Result<AgentResponse, ApiError> {
     if cancel.is_cancelled() {
@@ -209,7 +208,7 @@ pub async fn call_computer_use_api(
     messages.push(ChatMessage {
         role: "system".to_string(),
         content: vec![ContentPart::Text {
-            text: crate::protocol::structured_prompt(system_prompt, simple_tools),
+            text: crate::protocol::structured_prompt(system_prompt),
         }],
     });
 
@@ -238,10 +237,7 @@ pub async fn call_computer_use_api(
 
     // Build the chat request
     let request = ChatRequest {
-        response_format: Some(crate::protocol::response_format(
-            coordinate_base,
-            simple_tools,
-        )),
+        response_format: Some(crate::protocol::response_format(coordinate_base)),
         model: model_id.to_string(),
         messages,
         max_tokens: Some(4096),
@@ -402,7 +398,6 @@ fn rejected_response(choice: &ChatChoice, output_text: &str, error: String) -> A
         action: ActionResult {
             action: "none".into(),
             arguments: ActionResultArguments::default(),
-            progress: None,
             report: None,
         },
         coordinate_absolute: None,
@@ -500,7 +495,6 @@ pub async fn refine_coordinate(
         enable_thinking,
         None,
         coordinate_base,
-        false,
         cancel,
     )
     .await
@@ -730,7 +724,6 @@ mod tests {
             false,
             None,
             1000.0,
-            false,
             &CancellationToken::new(),
         )
         .await
@@ -738,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn constrained_request_sends_shared_schema_and_accepts_bare_json() {
-        let (address, server) = mock_completions(vec![(200, completion(r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"progress":{"next_milestone_id":"m1-1","expected_outcome":"Browser opens"}}}"#))]).await;
+        let (address, server) = mock_completions(vec![(200, completion(r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"screen":"Desktop with the browser icon in the taskbar"}}"#))]).await;
         let result = synthetic_request(&address).await.unwrap();
         assert!(result.success);
         assert!(result.format_warning.is_none());
@@ -746,7 +739,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0]["response_format"],
-            crate::protocol::response_format(1000.0, false)
+            crate::protocol::response_format(1000.0)
         );
         let prompt = requests[0]["messages"][0]["content"][0]["text"]
             .as_str()
@@ -780,7 +773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_ignoring_schema_cannot_execute_misplaced_progress() {
+    async fn server_ignoring_schema_cannot_smuggle_unknown_fields() {
         let (address, server) = mock_completions(vec![(200, completion(r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"next_milestone_id":"m1-1"}}"#))]).await;
         let result = synthetic_request(&address).await.unwrap();
         assert!(!result.success);
@@ -925,7 +918,7 @@ mod tests {
             assert!(!response.success);
             assert_eq!(response.action.action, "none");
             assert_eq!(response.action.arguments, ActionResultArguments::default());
-            assert!(response.action.progress.is_none());
+            assert!(response.action.report.is_none());
             assert!(
                 response.output_text.contains("computer")
                     || response.output_text.contains("coordinate")
@@ -985,7 +978,6 @@ mod tests {
                 false,
                 None,
                 1000.0,
-                false,
                 &request_cancel,
             )
             .await

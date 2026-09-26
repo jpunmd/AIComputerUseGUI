@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "computer",
-    "description": "Propose one computer action and optionally report observations from the current screen.",
+    "description": "Perform one computer action on the current screen.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -34,7 +34,7 @@
           },
           "maxItems": 4,
           "minItems": 2,
-          "description": "Normalized [x,y]; use four values only when bounding-box targeting is requested."
+          "description": "[x,y] for clicks and scroll, normalized 0-1000."
         },
         "start_coordinate": {
           "type": "array",
@@ -60,13 +60,30 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 8192,
-          "description": "Text to type, answer/evidence for done/none/confirm, or a JSON-encoded plan string for plan. Omit on clicks and key presses."
+          "description": "Only for type (text to type), done (evidence), none (answer) and confirm (question)."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "minItems": 1,
+          "maxItems": 7,
+          "description": "Only for plan: short steps, each \"what to do -> what will be visible when it worked\"."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Only for plan, when changing an existing plan: what went wrong."
         },
         "key": {
           "type": "string",
           "minLength": 1,
           "maxLength": 64,
-          "description": "One key chord as a string, e.g. ctrl+l. Never an array."
+          "description": "Only for key: one chord such as ctrl+l or enter."
         },
         "direction": {
           "type": "string",
@@ -82,146 +99,24 @@
           "minimum": 1,
           "maximum": 50
         },
-        "progress": {
-          "type": "object",
-          "properties": {
-            "milestones": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 40
-                  },
-                  "status": {
-                    "type": "string",
-                    "enum": [
-                      "in_progress",
-                      "completed",
-                      "blocked"
-                    ]
-                  },
-                  "evidence": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 500
-                  }
-                },
-                "required": [
-                  "id",
-                  "status",
-                  "evidence"
-                ],
-                "additionalProperties": false
-              },
-              "maxItems": 7
-            },
-            "outcome": {
-              "type": "object",
-              "properties": {
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "succeeded",
-                    "failed",
-                    "uncertain"
-                  ]
-                },
-                "evidence": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
-                }
-              },
-              "required": [
-                "status",
-                "evidence"
-              ],
-              "additionalProperties": false
-            },
-            "notes": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 40
-                  },
-                  "kind": {
-                    "type": "string",
-                    "enum": [
-                      "fact",
-                      "artifact",
-                      "failure",
-                      "question"
-                    ]
-                  },
-                  "text": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 400
-                  },
-                  "evidence": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 500
-                  }
-                },
-                "required": [
-                  "kind",
-                  "text"
-                ],
-                "additionalProperties": false
-              },
-              "maxItems": 6
-            },
-            "resolve_questions": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 40
-                  },
-                  "answer": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 400
-                  },
-                  "evidence": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 500
-                  }
-                },
-                "required": [
-                  "id",
-                  "answer",
-                  "evidence"
-                ],
-                "additionalProperties": false
-              },
-              "maxItems": 6
-            },
-            "next_milestone_id": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 40
-            },
-            "expected_outcome": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 400
-            }
-          },
-          "required": [],
-          "additionalProperties": false
+        "screen": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "One short sentence describing what THIS screenshot shows."
+        },
+        "last_action": {
+          "type": "string",
+          "enum": [
+            "worked",
+            "failed",
+            "unclear"
+          ],
+          "description": "Did your previous action work, judging by THIS screenshot? Omit on the first action."
+        },
+        "step_done": {
+          "type": "boolean",
+          "description": "true only when the current plan step's success condition is visible now."
         }
       },
       "required": [
