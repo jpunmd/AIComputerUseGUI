@@ -466,9 +466,9 @@ export function useAgent() {
           const phasePrompt = requireReplan
             ? 'The previous approach repeated without progress. Return ONLY a plan action: reason (what went wrong) and steps with a different approach for the work still to do. Finished steps are kept automatically. Keep the original constraints. Do not propose input.'
             : planning
-              ? 'Make a short plan for the original task. Return only a plan action whose steps are one to seven short strings like "Open Chrome -> a Chrome window is visible". Do not act yet.'
+              ? 'Make a short plan for the original task. Return only a plan action whose steps are one to seven short strings like "Open Chrome -> a Chrome window is visible". Each step must be something done on screen with a visible result; do not add steps for reading, checking or reporting the answer, because done does that. Do not act yet.'
               : verifying
-                ? 'Verify completion against every requirement of the original task using this NEW screenshot. Return done with observed evidence only if all requirements are met; otherwise take the next necessary action or explain what is missing.'
+                ? 'Verify completion against every requirement of the original task using this NEW screenshot. Return done again, with the complete answer or result for the user in text, only if all requirements are met; otherwise take the next necessary action or explain what is missing.'
                 : next;
           const prompt =
             phasePrompt +
@@ -563,7 +563,7 @@ export function useAgent() {
             memory.current.task!.status = 'completed';
             message(
               'system',
-              `✓ Task completed — model checked a fresh screen: ${action.arguments.text}`,
+              `✓ Task completed (confirmed on a fresh screen):\n${action.arguments.text}`,
             );
             break;
           }

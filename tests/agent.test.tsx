@@ -654,6 +654,7 @@ describe('agent controller safety', () => {
     expect(calls[0][1].systemPrompt).toContain('step_done');
     expect(calls[0][1].systemPrompt).not.toContain('progress');
     expect(calls[0][1].query).toContain('Open Chrome -> a Chrome window is visible');
+    expect(calls[0][1].query).toContain('do not add steps for reading');
     expect(calls[2][1].query).toContain('Set last_action from THIS screenshot');
     // Neither the report nor the plan fields reach native input.
     const native = mocks.invoke.mock.calls

@@ -91,7 +91,7 @@ The client requests schema-constrained JSON through `response_format: {"type":"j
 
 If the server explicitly rejects structured output as unsupported (HTTP 400/422), the client retries once with its original prompt and displays a compatibility notice. This fallback also accepts a JSON action wrapped in `<tool_call>...</tool_call>`. Other HTTP errors and invalid model responses do not disable the schema. Server support determines whether generation is constrained; every response still passes local validation before input can be proposed.
 
-One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Rejection messages include the specific validation error and retain the rejected output for inspection. The agent gets two format-correction attempts. A `text` field on an action that does not type (for example a description on a click or key press) is discarded as commentary instead of rejecting the response. Plain text needs user attention and never implies completion; under constrained output use `action: "none"` with `text` for explanations.
+One OpenAI-style `message.tool_calls` function result named `computer` is also accepted, including null `content`. Multiple calls, unknown tools, malformed/truncated output, and actions only in reasoning are rejected. Rejection messages include the specific validation error and retain the rejected output for inspection. The agent gets two format-correction attempts. A `text` field on an action that does not type (for example a description on a click or key press) is discarded as commentary instead of rejecting the response. Plain text needs user attention and never implies completion; under constrained output the model finishes with `action: "done"` (answer in `text`) and uses `action: "none"` with `text` when it cannot continue.
 
 Every field sits directly in `arguments`. Any action may add three optional fields: `screen` (one sentence about the current screenshot), `last_action` (`worked`, `failed` or `unclear`) and `step_done` (the current plan step's success condition is visible). The controller turns these into milestone and outcome records, and owns all milestone IDs. An omitted `last_action` is recorded as uncertain, so it never blocks the next action. `step_done` completes the current step unless the last action failed. `done` completes the remaining steps, and the controller still confirms completion on a fresh screenshot.
 
@@ -110,7 +110,8 @@ Every field sits directly in `arguments`. Any action may add three optional fiel
 | `wait`, `screenshot` | No arguments |
 | `plan` | `steps`: one to seven strings, each `what to do -> what will be visible when it worked` (without an arrow the step doubles as its own success condition). To revise, send `reason` and only the remaining steps; finished steps are kept. A step list written as lines of `text` is also accepted. |
 | `confirm` | `text`: a question; does not authorize subsequent input itself |
-| `done` | `text`: observed completion evidence |
+| `done` | `text`: the answer or result for the user, with observed completion evidence. Answers to questions go here, not in `none`. |
+| `none` | `text`: why the model cannot continue, or what it needs from the user |
 
 ## Verification and dependencies
 

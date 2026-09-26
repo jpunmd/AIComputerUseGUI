@@ -51,6 +51,12 @@ describe('model wire instructions', () => {
     }
   });
 
+  it('routes answers through done, which the controller verifies, not none', () => {
+    expect(SYSTEM_RULES).toContain('done: text (the answer or result');
+    expect(SYSTEM_RULES).not.toMatch(/none: text \([^)]*answer/);
+    expect(SYSTEM_RULES).toContain('one fresh screenshot to confirm');
+  });
+
   it('the plan example parses into steps with success conditions', () => {
     const plan = [...SYSTEM_RULES.matchAll(/<tool_call>(.*?)<\/tool_call>/g)]
       .map(([, json]) => JSON.parse(json).arguments)

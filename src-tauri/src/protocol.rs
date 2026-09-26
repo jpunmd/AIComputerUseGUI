@@ -32,7 +32,7 @@ pub fn structured_prompt(prompt: &str) -> String {
     let prompt = prompt
         .replace("<tool_call>", "")
         .replace("</tool_call>", "");
-    format!("{prompt}\n\nResponse transport: return exactly one JSON object with name=computer and arguments matching the supplied response schema. This overrides earlier formatting instructions: no XML tags, Markdown fences or prose outside the object. For an answer or an ambiguous/missing target, use action=none and put the explanation in arguments.text.")
+    format!("{prompt}\n\nResponse transport: return exactly one JSON object with name=computer and arguments matching the supplied response schema. This overrides earlier formatting instructions: no XML tags, Markdown fences or prose outside the object. To finish, use action=done with the answer or result in arguments.text. For an ambiguous/missing target, use action=none and put the explanation in arguments.text.")
 }
 
 fn schema_error(context: &str, error: serde_json::Error) -> String {
@@ -208,6 +208,7 @@ mod tests {
         let prompt = structured_prompt("Example: <tool_call>{\"name\":\"computer\"}</tool_call>");
         assert!(!prompt.contains("<tool_call>"));
         assert!(prompt.contains("action=none"));
+        assert!(prompt.contains("action=done with the answer"));
         assert!(!prompt.contains("progress"));
     }
 
