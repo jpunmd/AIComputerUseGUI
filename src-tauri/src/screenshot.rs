@@ -2,12 +2,26 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use image::codecs::png::PngEncoder;
 use image::{imageops::FilterType, ImageEncoder, RgbaImage};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use xcap::Monitor;
 
 /// Default maximum dimension (width or height) for screenshots sent to the model
 /// This helps reduce token usage while maintaining enough detail for the model
 const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1920;
+
+/// Screen-change fingerprint: the capture averaged down to a fixed grid of
+/// luminance cells (8x8 px each on a 1080p screen, 16x16 on 4K).
+const FINGERPRINT_SIZE: (u32, u32) = (240, 135);
+/// A cell counts as changed when its average luminance moves by more than this,
+/// so a single changed pixel never does but a line of text or an icon does.
+const CELL_DELTA: u8 = 8;
+/// Frames closer than this are "the same screen": a blinking caret or the
+/// taskbar clock (a few cells) stays below it; a 40x20 px change does not.
+/// The frontend uses the same value to tell the model nothing visibly changed.
+pub const STABLE_FRACTION: f64 = 0.0002;
+const SETTLE_POLL: Duration = Duration::from_millis(150);
 
 #[derive(Error, Debug)]
 pub enum ScreenshotError {
@@ -57,6 +71,7 @@ fn resize_image(img: &RgbaImage, max_dimension: u32) -> RgbaImage {
 #[derive(Debug, Clone)]
 pub struct ScreenshotResult {
     pub native_image: Arc<RgbaImage>,
+    pub fingerprint: Vec<u8>,
     pub base64_image: String,
     pub image_width: u32,
     pub image_height: u32,
@@ -65,33 +80,88 @@ pub struct ScreenshotResult {
     pub geometry: ScreenGeometry,
 }
 
+/// A full-resolution capture of the primary monitor.
+struct NativeCapture {
+    image: RgbaImage,
+    geometry: ScreenGeometry,
+}
+
+fn capture_native() -> Result<NativeCapture, ScreenshotError> {
+    let screen = primary_monitor()?;
+    let geometry = geometry(&screen)?;
+    let image = screen
+        .capture_image()
+        .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
+    let image = RgbaImage::from_raw(image.width(), image.height(), image.into_raw())
+        .ok_or_else(|| ScreenshotError::EncodeError("Failed to create RGBA image".to_string()))?;
+    if (image.width(), image.height()) != (geometry.width, geometry.height) {
+        return Err(ScreenshotError::CaptureError(
+            "Captured image and monitor geometry differ; capture again".into(),
+        ));
+    }
+    Ok(NativeCapture { image, geometry })
+}
+
+pub fn fingerprint(image: &RgbaImage) -> Vec<u8> {
+    image::imageops::thumbnail(image, FINGERPRINT_SIZE.0, FINGERPRINT_SIZE.1)
+        .pixels()
+        .map(|p| {
+            let [r, g, b, _] = p.0;
+            ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
+        })
+        .collect()
+}
+
+/// Fraction of fingerprint cells that changed between two captures (1.0 when
+/// they cannot be compared).
+pub fn changed_fraction(a: &[u8], b: &[u8]) -> f64 {
+    if a.is_empty() || a.len() != b.len() {
+        return 1.0;
+    }
+    let changed = a
+        .iter()
+        .zip(b)
+        .filter(|(x, y)| x.abs_diff(**y) > CELL_DELTA)
+        .count();
+    changed as f64 / a.len() as f64
+}
+
+/// Wait for animations and page loads to finish: poll until two consecutive
+/// frames match, the timeout passes, or the run is cancelled.
+pub fn wait_until_stable(
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Result<(), ScreenshotError> {
+    if timeout.is_zero() {
+        return Ok(());
+    }
+    let deadline = Instant::now() + timeout;
+    let mut previous = fingerprint(&capture_native()?.image);
+    while Instant::now() < deadline && !cancel.is_cancelled() {
+        std::thread::sleep(SETTLE_POLL);
+        let next = fingerprint(&capture_native()?.image);
+        if changed_fraction(&previous, &next) < STABLE_FRACTION {
+            break;
+        }
+        previous = next;
+    }
+    Ok(())
+}
+
 /// Capture a screenshot of the primary screen and return it with metadata
 /// max_dimension: Optional maximum dimension for resizing. If None, uses DEFAULT_MAX_SCREENSHOT_DIMENSION.
 pub fn capture_screen_with_metadata(
     max_dimension: Option<u32>,
 ) -> Result<ScreenshotResult, ScreenshotError> {
     let max_dim = checked_dimension(max_dimension.unwrap_or(DEFAULT_MAX_SCREENSHOT_DIMENSION))?;
-
-    let screen = primary_monitor()?;
-    let geometry = geometry(&screen)?;
+    let NativeCapture {
+        image: rgba_image,
+        geometry,
+    } = capture_native()?;
     let actual_width = geometry.width;
     let actual_height = geometry.height;
 
-    // Capture the screenshot
-    let image = screen
-        .capture_image()
-        .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
-
-    // Convert to RgbaImage for resizing
-    let rgba_image = RgbaImage::from_raw(image.width(), image.height(), image.into_raw())
-        .ok_or_else(|| ScreenshotError::EncodeError("Failed to create RGBA image".to_string()))?;
-
     // Resize the image to reduce token usage
-    if (rgba_image.width(), rgba_image.height()) != (actual_width, actual_height) {
-        return Err(ScreenshotError::CaptureError(
-            "Captured image and monitor geometry differ; capture again".into(),
-        ));
-    }
     let resized = resize_image(&rgba_image, max_dim);
     let image_width = resized.width();
     let image_height = resized.height();
@@ -121,6 +191,7 @@ pub fn capture_screen_with_metadata(
     );
 
     Ok(ScreenshotResult {
+        fingerprint: fingerprint(&rgba_image),
         native_image: Arc::new(rgba_image),
         base64_image,
         image_width,
@@ -223,12 +294,6 @@ pub fn zoom_crop(
     })
 }
 
-/// Get screen dimensions (returns actual screen dimensions, not resized)
-pub fn get_screen_dimensions() -> Result<(u32, u32), ScreenshotError> {
-    let g = get_screen_geometry()?;
-    Ok((g.width, g.height))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenGeometry {
     pub id: u32,
@@ -298,6 +363,26 @@ mod tests {
                 assert_eq!((end_x, end_y), (1919.0, 1079.0));
             }
         }
+    }
+    #[test]
+    fn fingerprint_separates_visible_changes_from_pixel_noise() {
+        let screen = RgbaImage::from_pixel(1920, 1080, image::Rgba([240, 240, 240, 255]));
+        let base = fingerprint(&screen);
+        assert_eq!(base.len(), 240 * 135);
+        assert_eq!(changed_fraction(&base, &fingerprint(&screen)), 0.0);
+
+        let mut pixel = screen.clone();
+        pixel.put_pixel(700, 400, image::Rgba([0, 0, 0, 255]));
+        assert!(changed_fraction(&base, &fingerprint(&pixel)) < STABLE_FRACTION);
+
+        let mut button = screen.clone();
+        for y in 500..520 {
+            for x in 900..940 {
+                button.put_pixel(x, y, image::Rgba([30, 90, 200, 255]));
+            }
+        }
+        assert!(changed_fraction(&base, &fingerprint(&button)) >= STABLE_FRACTION);
+        assert_eq!(changed_fraction(&base, &[]), 1.0);
     }
     #[test]
     #[ignore = "Requires an interactive Windows desktop; captures only, never sends input"]

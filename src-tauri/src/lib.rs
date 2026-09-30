@@ -10,11 +10,11 @@ mod window_guard;
 
 use crate::{
     control_error::ControlError,
-    run_control::{Proposal, RunControl},
-    types::{ActionResult, AgentResponse},
+    run_control::{Capture, Proposal, RunControl},
+    types::{ActionResult, AgentResponse, ModelConfig},
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
 type Control<'a> = State<'a, Arc<RunControl>>;
@@ -27,11 +27,22 @@ pub struct ScreenshotWithMetadata {
     pub actual_screen_width: u32,
     pub actual_screen_height: u32,
     pub observation_id: String,
+    /// Fraction of the screen that changed since the run's previous
+    /// observation; null for the first one.
+    pub screen_change: Option<f64>,
 }
 
 #[tauri::command]
 fn start_run(supervised: bool, state: Control<'_>) -> Result<String, String> {
-    state.begin(supervised)
+    let id = state.begin(supervised)?;
+    // The user just pressed Run in this window. Hand focus back to where they
+    // were working so the first action has a real target.
+    if window_guard::own_window_is_foreground() {
+        if let Some(handle) = state.last_external() {
+            window_guard::restore_focus(handle);
+        }
+    }
+    Ok(id)
 }
 #[tauri::command]
 fn stop_run(run_id: String, state: Control<'_>) {
@@ -42,13 +53,19 @@ fn stop_run(run_id: String, state: Control<'_>) {
 async fn capture_screenshot_with_metadata(
     run_id: String,
     max_dimension: Option<u32>,
+    settle_ms: Option<u32>,
     state: Control<'_>,
 ) -> Result<ScreenshotWithMetadata, String> {
     let token = state.token(&run_id)?;
-    let foreground = window_guard::foreground();
-    let windows = window_guard::snapshot();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let settle = Duration::from_millis(settle_ms.unwrap_or(0).min(10_000).into());
+    let settle_token = token.clone();
+    let (foreground, windows, result) = tauri::async_runtime::spawn_blocking(move || {
+        screenshot::wait_until_stable(settle, &settle_token)?;
+        // Identify windows right before the frame the actions are checked against.
+        let foreground = window_guard::foreground();
+        let windows = window_guard::snapshot();
         screenshot::capture_screen_with_metadata(max_dimension)
+            .map(|result| (foreground, windows, result))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -56,12 +73,15 @@ async fn capture_screenshot_with_metadata(
     if token.is_cancelled() {
         return Err("Run stopped".into());
     }
-    let observation_id = state.observe(
+    let (observation_id, screen_change) = state.observe(
         &run_id,
-        result.geometry,
-        result.native_image,
-        foreground,
-        windows,
+        Capture {
+            geometry: result.geometry,
+            native_image: result.native_image,
+            fingerprint: result.fingerprint,
+            foreground,
+            windows,
+        },
     )?;
     Ok(ScreenshotWithMetadata {
         base64_image: result.base64_image,
@@ -70,6 +90,7 @@ async fn capture_screenshot_with_metadata(
         actual_screen_width: result.actual_screen_width,
         actual_screen_height: result.actual_screen_height,
         observation_id,
+        screen_change,
     })
 }
 
@@ -79,25 +100,24 @@ async fn process_computer_use(
     run_id: String,
     screenshot_base64: String,
     query: String,
-    api_endpoint: String,
-    model_id: String,
+    model: ModelConfig,
     display_width: u32,
     display_height: u32,
     system_prompt: String,
-    enable_thinking: Option<bool>,
     prior_turns: Option<Vec<types::PriorTurn>>,
     state: Control<'_>,
 ) -> Result<AgentResponse, String> {
     let token = state.token(&run_id)?;
+    let image = api::ModelImage {
+        base64: &screenshot_base64,
+        width: display_width,
+        height: display_height,
+    };
     api::call_computer_use_api(
-        &api_endpoint,
-        &model_id,
-        &screenshot_base64,
+        &model,
+        &image,
         &query,
-        display_width,
-        display_height,
         &system_prompt,
-        enable_thinking.unwrap_or(false),
         prior_turns,
         1000.0,
         &token,
@@ -111,15 +131,13 @@ async fn process_computer_use(
 async fn refine_coordinate(
     run_id: String,
     observation_id: String,
-    api_endpoint: String,
-    model_id: String,
+    model: ModelConfig,
     coarse_x: f64,
     coarse_y: f64,
     action_type: String,
     query: String,
     crop_fraction: Option<f64>,
     max_dimension: Option<u32>,
-    enable_thinking: Option<bool>,
     box_mode: Option<bool>,
     state: Control<'_>,
 ) -> Result<api::RefineResult, String> {
@@ -127,8 +145,7 @@ async fn refine_coordinate(
     let observation = state.observation(&run_id, &observation_id)?;
     api::refine_coordinate(
         &observation.native_image,
-        &api_endpoint,
-        &model_id,
+        &model,
         coarse_x,
         coarse_y,
         &action_type,
@@ -136,7 +153,6 @@ async fn refine_coordinate(
         crop_fraction.unwrap_or(0.3),
         max_dimension.unwrap_or(1920),
         1000.0,
-        enable_thinking.unwrap_or(false),
         box_mode.unwrap_or(false),
         &token,
     )
@@ -159,15 +175,18 @@ fn prepare_action(
     if action.report.is_some() {
         return Err("Model reports cannot be submitted to the input executor".into());
     }
-    validation::validate(&action, 1000.0, false)?;
-    actions::validate_keys(&action).map_err(|e| e.to_string())?;
+    // Problems with the proposal itself go back to the model to correct.
+    validation::validate(&action, 1000.0, false).map_err(ControlError::invalid_proposal)?;
+    actions::validate_keys(&action).map_err(|e| ControlError::invalid_proposal(e.to_string()))?;
     let observation = state.observation(&run_id, &observation_id)?;
     if screenshot::get_screen_geometry().map_err(|e| e.to_string())? != observation.geometry {
         return Err(ControlError::screen_changed(
             "Display changed; capture again",
         ));
     }
-    let target = if let Some(p) = action
+    let target = if validation::is_shell_chord(&action) {
+        None
+    } else if let Some(p) = action
         .arguments
         .coordinate
         .as_ref()
@@ -188,12 +207,11 @@ fn prepare_action(
             ),
         )?)
     } else if validation::is_mutating(&action) {
-        Some(
-            observation
-                .foreground
-                .clone()
-                .ok_or("Click the target application before typing or pressing keys")?,
-        )
+        Some(observation.foreground.clone().ok_or_else(|| {
+            ControlError::invalid_proposal(
+                "No application window has focus (the controller does). Click the target application first, or press win to open Start.",
+            )
+        })?)
     } else {
         None
     };
@@ -262,11 +280,6 @@ async fn fetch_available_models(api_endpoint: String) -> Result<Vec<String>, Str
         .await
         .map_err(|e| e.to_string())
 }
-#[tauri::command]
-fn get_screen_size() -> Result<(u32, u32), String> {
-    screenshot::get_screen_dimensions().map_err(|e| e.to_string())
-}
-
 /// Saves exported sessions to a file the user picks in a native Save dialog.
 /// The webview can't download files itself, and this keeps file-system access
 /// on the Rust side: the page never gets a path or general write permission.
@@ -317,7 +330,11 @@ pub fn run() {
                         let _ = handle.emit("agent-stopped", ());
                     }
                     pressed = now;
-                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    // Remember the user's last work window for start_run.
+                    if let Some(window) = window_guard::foreground_app_window() {
+                        control.note_foreground(window);
+                    }
+                    std::thread::sleep(Duration::from_millis(30));
                 }
             });
             Ok(())
@@ -333,7 +350,6 @@ pub fn run() {
             execute_action,
             test_api_connection,
             fetch_available_models,
-            get_screen_size,
             export_sessions
         ])
         .run(tauri::generate_context!())

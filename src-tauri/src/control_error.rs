@@ -19,6 +19,16 @@ impl ControlError {
         }
     }
 
+    /// A proposal the model can correct (bad key, no focused target, the
+    /// controller's own window). Raised only before any input is sent.
+    pub fn invalid_proposal(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_proposal",
+            message: message.into(),
+            input_may_have_been_sent: false,
+        }
+    }
+
     pub fn after_input_attempt(mut self) -> Self {
         // A guard can reject the second click, a typing chunk, or a drag after
         // some input was sent. Never tell the model to replay it blindly.
@@ -60,5 +70,13 @@ mod tests {
             ControlError::from("Target window changed since the screenshot; capture again");
         assert_eq!(rejected.code, "action_rejected");
         assert_eq!(ControlError::from("Run stopped").code, "action_rejected");
+        let invalid = serde_json::to_value(ControlError::invalid_proposal("Unknown key")).unwrap();
+        assert_eq!(invalid["code"], "invalid_proposal");
+        assert_eq!(invalid["input_may_have_been_sent"], false);
+        // Once input may have been sent, a correction is no longer safe to request.
+        let executed =
+            serde_json::to_value(ControlError::invalid_proposal("x").after_input_attempt())
+                .unwrap();
+        assert_eq!(executed["input_may_have_been_sent"], true);
     }
 }

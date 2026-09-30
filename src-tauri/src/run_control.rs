@@ -1,5 +1,8 @@
 use crate::{
-    screenshot::ScreenGeometry, types::ActionResult, validation, window_guard::WindowTarget,
+    screenshot::{self, ScreenGeometry},
+    types::ActionResult,
+    validation,
+    window_guard::WindowTarget,
 };
 use serde::Serialize;
 use std::{
@@ -14,9 +17,19 @@ pub struct Observation {
     pub id: String,
     pub geometry: ScreenGeometry,
     pub native_image: Arc<image::RgbaImage>,
+    pub fingerprint: Arc<[u8]>,
     pub foreground: Option<WindowTarget>,
     pub windows: Vec<WindowTarget>,
     pub captured_at: Instant,
+}
+
+/// What a capture needs to become the run's current observation.
+pub struct Capture {
+    pub geometry: ScreenGeometry,
+    pub native_image: Arc<image::RgbaImage>,
+    pub fingerprint: Vec<u8>,
+    pub foreground: Option<WindowTarget>,
+    pub windows: Vec<WindowTarget>,
 }
 
 pub struct PreparedAction {
@@ -40,6 +53,9 @@ struct Run {
 pub struct RunControl {
     run: Mutex<Option<Run>>,
     pub execution: Mutex<()>,
+    /// The most recent foreground window outside this app, so a run started
+    /// from the controller can hand focus back to where the user was working.
+    last_external: Mutex<Option<usize>>,
 }
 
 #[derive(Serialize)]
@@ -85,30 +101,40 @@ impl RunControl {
         }
     }
 
-    pub fn observe(
-        &self,
-        id: &str,
-        geometry: ScreenGeometry,
-        native_image: Arc<image::RgbaImage>,
-        foreground: Option<WindowTarget>,
-        windows: Vec<WindowTarget>,
-    ) -> Result<String, String> {
+    pub fn note_foreground(&self, handle: usize) {
+        if let Ok(mut last) = self.last_external.lock() {
+            *last = Some(handle);
+        }
+    }
+
+    pub fn last_external(&self) -> Option<usize> {
+        self.last_external.lock().ok().and_then(|last| *last)
+    }
+
+    /// Record a new observation. Returns its ID and the fraction of the screen
+    /// that changed since the run's previous observation (None for the first).
+    pub fn observe(&self, id: &str, capture: Capture) -> Result<(String, Option<f64>), String> {
         let mut current = self.run.lock().map_err(|_| "Run state unavailable")?;
         let run = current
             .as_mut()
             .filter(|r| r.id == id && !r.cancel.is_cancelled())
             .ok_or("Run stopped or replaced")?;
+        let screen_change = run
+            .observation
+            .as_ref()
+            .map(|o| screenshot::changed_fraction(&o.fingerprint, &capture.fingerprint));
         let observation_id = Uuid::new_v4().to_string();
         run.observation = Some(Observation {
             id: observation_id.clone(),
-            geometry,
-            native_image,
-            foreground,
-            windows,
+            geometry: capture.geometry,
+            native_image: capture.native_image,
+            fingerprint: capture.fingerprint.into(),
+            foreground: capture.foreground,
+            windows: capture.windows,
             captured_at: Instant::now(),
         });
         run.pending = None; // New observations invalidate old proposals and approvals.
-        Ok(observation_id)
+        Ok((observation_id, screen_change))
     }
 
     pub fn observation(&self, id: &str, observation_id: &str) -> Result<Observation, String> {
@@ -216,23 +242,26 @@ impl RunControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn capture(image: image::RgbaImage) -> Capture {
+        Capture {
+            geometry: ScreenGeometry {
+                id: 1,
+                width: image.width(),
+                height: image.height(),
+                x: 0,
+                y: 0,
+            },
+            fingerprint: screenshot::fingerprint(&image),
+            native_image: Arc::new(image),
+            foreground: None,
+            windows: vec![],
+        }
+    }
     fn setup() -> (RunControl, String, Observation, ActionResult) {
         let control = RunControl::default();
         let run = control.begin(true).unwrap();
-        let obs = control
-            .observe(
-                &run,
-                ScreenGeometry {
-                    id: 1,
-                    width: 100,
-                    height: 100,
-                    x: 0,
-                    y: 0,
-                },
-                Arc::new(image::RgbaImage::new(100, 100)),
-                None,
-                vec![],
-            )
+        let (obs, _) = control
+            .observe(&run, capture(image::RgbaImage::new(100, 100)))
             .unwrap();
         let observation = control.observation(&run, &obs).unwrap();
         let action =
@@ -259,9 +288,29 @@ mod tests {
         let next = c.prepare(&r, a, o.clone(), None).unwrap();
         assert!(c.take(&r, &p.id).is_err());
         assert!(c.take(&r, &next.id).is_err());
-        c.observe(&r, o.geometry, o.native_image, None, vec![])
-            .unwrap();
+        c.observe(&r, capture((*o.native_image).clone())).unwrap();
         assert!(c.approve(&r, &next.id, false).is_err());
+    }
+    #[test]
+    fn observations_report_screen_change_since_the_previous_one() {
+        let c = RunControl::default();
+        let r = c.begin(true).unwrap();
+        let blank = image::RgbaImage::new(100, 100);
+        assert_eq!(c.observe(&r, capture(blank.clone())).unwrap().1, None);
+        assert_eq!(c.observe(&r, capture(blank.clone())).unwrap().1, Some(0.0));
+        let white = image::RgbaImage::from_pixel(100, 100, image::Rgba([255; 4]));
+        assert_eq!(c.observe(&r, capture(white)).unwrap().1, Some(1.0));
+        // A new run starts without a previous screen to compare.
+        let next = c.begin(true).unwrap();
+        assert_eq!(c.observe(&next, capture(blank)).unwrap().1, None);
+    }
+    #[test]
+    fn remembers_the_last_external_window() {
+        let c = RunControl::default();
+        assert_eq!(c.last_external(), None);
+        c.note_foreground(42);
+        c.note_foreground(7);
+        assert_eq!(c.last_external(), Some(7));
     }
     #[test]
     fn task_permission_requires_a_current_proposal_and_expires_with_the_run() {
@@ -279,20 +328,8 @@ mod tests {
         c.stop(Some(&r));
         assert!(c.approve(&r, &next.id, true).is_err());
         let new_run = c.begin(true).unwrap();
-        let obs_id = c
-            .observe(
-                &new_run,
-                ScreenGeometry {
-                    id: 1,
-                    width: 100,
-                    height: 100,
-                    x: 0,
-                    y: 0,
-                },
-                Arc::new(image::RgbaImage::new(100, 100)),
-                None,
-                vec![],
-            )
+        let (obs_id, _) = c
+            .observe(&new_run, capture(image::RgbaImage::new(100, 100)))
             .unwrap();
         let fresh = c.observation(&new_run, &obs_id).unwrap();
         assert!(

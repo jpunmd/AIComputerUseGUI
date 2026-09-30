@@ -5,7 +5,9 @@ import {
   MAX_RECENT_TURNS,
   MAX_PROMPT_CHARS,
   parsePlan,
-  actionSignature,
+  actionKey,
+  NO_CHANGE_HINT,
+  NO_VISIBLE_CHANGE,
 } from '../src/agent/memory';
 import {
   restoreTask,
@@ -365,12 +367,29 @@ describe('task progress and durable memory', () => {
     expect(memory.task!.notes).toEqual([]);
     expect(memory.task!.plan).toEqual([]);
     expect(memory.task!.receipts).toEqual([]);
-    expect(actionSignature(input, 'screen')).toBe(
-      actionSignature(
-        { ...input, report: { screen: 'Different wording' } },
-        'screen',
-      ),
+    expect(actionKey(input)).toBe(
+      actionKey({ ...input, report: { screen: 'Different wording' } }),
     );
+    expect(actionKey(input)).not.toBe(
+      actionKey({ action: 'key', arguments: { key: 'ctrl+w' } }),
+    );
+  });
+
+  it('tells the model when its last input changed nothing visible', () => {
+    const memory = setup();
+    memory.submitted(input, memory.actionContext(input));
+    memory.observe('screen-2', NO_VISIBLE_CHANGE / 2);
+    expect(memory.prompt('Continue')).toContain(NO_CHANGE_HINT);
+    // A visible change, an unknown change, or nothing to review: no hint.
+    for (const change of [0.01, null]) {
+      const other = setup();
+      other.submitted(input, other.actionContext(input));
+      other.observe('screen-2', change);
+      expect(other.prompt('Continue')).not.toContain(NO_CHANGE_HINT);
+    }
+    const fresh = setup();
+    fresh.observe('screen-2', 0);
+    expect(fresh.prompt('Continue')).not.toContain(NO_CHANGE_HINT);
   });
 
   it('removes legacy approval and tool-format settings', () => {
@@ -386,5 +405,21 @@ describe('task progress and durable memory', () => {
     expect(settings.maxTurns).toBe(100);
     expect(settings.actionDelayMs).toBe(0);
     expect(settings.enablePlanning).toBe(true);
+  });
+
+  it('bounds the run, settle and token settings and drops dead display fields', () => {
+    const settings = sanitizeSettings({
+      maxRunMinutes: 0,
+      settleTimeoutMs: 99999,
+      maxTokens: 10,
+      extraInstructions: 'x'.repeat(20000),
+      displayWidth: 1000,
+    });
+    expect(settings.maxRunMinutes).toBe(1);
+    expect(settings.settleTimeoutMs).toBe(10000);
+    expect(settings.maxTokens).toBe(256);
+    expect(settings.extraInstructions).toHaveLength(8000);
+    expect(settings).not.toHaveProperty('displayWidth');
+    expect(sanitizeSettings({ maxTokens: NaN }).maxTokens).toBe(8192);
   });
 });

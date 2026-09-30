@@ -25,6 +25,14 @@ export interface PriorTurn {
 export const MAX_CONTEXT_CHARS = 24000;
 export const MAX_RECENT_TURNS = 6;
 export const MAX_PROMPT_CHARS = 32000;
+// Below this fraction of changed screen area (see screenshot.rs
+// STABLE_FRACTION) nothing visible happened: a caret blink or the clock at most.
+export const NO_VISIBLE_CHANGE = 0.0002;
+export const NO_CHANGE_HINT =
+  'Controller check: almost no pixels changed after that action. If you expected a visible result, it probably did not work.';
+
+export const isUnchanged = (screenChange?: number | null) =>
+  typeof screenChange === 'number' && screenChange < NO_VISIBLE_CHANGE;
 const inputActions = [
   'click',
   'left_click',
@@ -79,6 +87,8 @@ export class TaskMemory {
   private omitted = 0;
   private currentObservation: string | null = null;
   private reviewedObservation: string | null = null;
+  // Measured by the controller, so the model gets a signal it cannot misjudge.
+  private screenChange: number | null = null;
 
   record(query: string, answer: string) {
     this.turns.push({ user_query: query, assistant_content: answer });
@@ -147,6 +157,7 @@ export class TaskMemory {
           last.action +
           '\nIt should have caused: ' +
           last.expected +
+          (isUnchanged(this.screenChange) ? '\n' + NO_CHANGE_HINT : '') +
           '\nSet last_action from THIS screenshot.'
         : 'No previous action to review; omit last_action.',
       current
@@ -225,9 +236,12 @@ export class TaskMemory {
     // A new task never inherits another task's facts/receipts, but recent user conversation remains available.
     this.currentObservation = null;
     this.reviewedObservation = null;
+    this.screenChange = null;
   }
 
-  observe(id: string) {
+  /** screenChange: fraction of the screen changed since the previous capture. */
+  observe(id: string, screenChange: number | null = null) {
+    this.screenChange = screenChange;
     if (!this.task) return;
     if (!id || id === this.currentObservation)
       throw new TaskUpdateError('a fresh screenshot is required');
@@ -504,6 +518,7 @@ export class TaskMemory {
     this.omitted = 0;
     this.currentObservation = null;
     this.reviewedObservation = null;
+    this.screenChange = null;
     const saved = messages
       .slice()
       .reverse()
@@ -521,20 +536,10 @@ export class TaskMemory {
   }
 }
 
-export function actionSignature(
-  action: ActionResult,
-  screenshot: string,
-): string {
-  let hash = 2166136261;
-  for (let i = 0; i < screenshot.length; i++)
-    hash = Math.imul(hash ^ screenshot.charCodeAt(i), 16777619);
-  // Varying model commentary must not bypass the repetition detector.
-  return (
-    JSON.stringify({
-      action: action.action,
-      arguments: action.arguments,
-    }) +
-    ':' +
-    (hash >>> 0)
-  );
+// Varying model commentary (the report) must not bypass the repetition detector.
+export function actionKey(action: ActionResult): string {
+  return JSON.stringify({
+    action: action.action,
+    arguments: action.arguments,
+  });
 }

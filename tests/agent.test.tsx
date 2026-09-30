@@ -45,15 +45,19 @@ beforeEach(() => {
         supervised = args.supervised as boolean;
         return 'run-1';
       }
-      if (command === 'capture_screenshot_with_metadata')
+      if (command === 'capture_screenshot_with_metadata') {
+        observationNumber++;
         return {
           base64_image: 'unchanged-screen',
           image_width: 1000,
           image_height: 1000,
           actual_screen_width: 1000,
           actual_screen_height: 1000,
-          observation_id: 'obs-' + ++observationNumber,
+          observation_id: 'obs-' + observationNumber,
+          // The first capture of a run has nothing to compare against.
+          screen_change: observationNumber > 1 ? 0 : null,
         };
+      }
       if (command === 'process_computer_use') {
         const response = responses.shift();
         if (!response) throw Error('No test model response remaining');
@@ -984,5 +988,191 @@ describe('agent controller safety', () => {
       false,
     );
     expect(result.current.error).toContain('refine_coordinate');
+  });
+});
+
+const invalidProposal = (message: string, sent = false) => ({
+  code: 'invalid_proposal',
+  message,
+  input_may_have_been_sent: sent,
+});
+const calls = (command: string) =>
+  mocks.invoke.mock.calls.filter((c) => c[0] === command);
+const hasMessage = (messages: { content: string }[], text: string) =>
+  messages.some((m) => m.content.includes(text));
+
+describe('controller recovery and limits', () => {
+  it('sends a proposal rejected before input back to the model and executes its correction', async () => {
+    const noFocus =
+      'No application window has focus (the controller does). Click the target application first, or press win to open Start.';
+    responses = [
+      reply('type', { text: 'hello' }),
+      reply('key', { key: 'win' }),
+      reply('done', { text: 'Start is open' }, { last_action: 'worked' }),
+      reply('done', { text: 'Start is still open' }),
+    ];
+    const original = mocks.invoke.getMockImplementation()!;
+    let prepared = 0;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'prepare_action' && prepared++ === 0
+        ? Promise.reject(invalidProposal(noFocus))
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask('Open Start', settings, false);
+    });
+    expect(result.current.task?.status).toBe('completed');
+    expect(result.current.error).toBeNull();
+    expect(calls('execute_action')).toHaveLength(1);
+    expect(JSON.parse(calls('prepare_action')[1][1].action).arguments).toEqual({
+      key: 'win',
+    });
+    const retry = calls('process_computer_use')[1][1].query;
+    expect(retry).toContain('rejected before any input was sent');
+    expect(retry).toContain(noFocus);
+    expect(
+      result.current.task?.notes.some((n) =>
+        n.text.includes('Rejected before any input'),
+      ),
+    ).toBe(true);
+  });
+
+  it('pauses on the third consecutive rejected proposal, or once input may have been sent', async () => {
+    responses = Array.from({ length: 3 }, () =>
+      reply('type', { text: 'hello' }),
+    );
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'prepare_action'
+        ? Promise.reject(invalidProposal('Unknown key'))
+        : original(cmd, args),
+    );
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask('Type hello', settings, false);
+    });
+    expect(calls('process_computer_use')).toHaveLength(3);
+    expect(calls('execute_action')).toHaveLength(0);
+    expect(result.current.task?.status).toBe('needs_user');
+    expect(result.current.error).toBe('Unknown key');
+
+    vi.clearAllMocks();
+    mocks.invoke.mockImplementation((cmd, args) =>
+      cmd === 'execute_action'
+        ? Promise.reject(invalidProposal('Controller window', true))
+        : original(cmd, args),
+    );
+    responses = [reply('click', { coordinate: [500, 500] })];
+    await act(async () => {
+      await result.current.runTask('Click it', settings, false);
+    });
+    expect(calls('process_computer_use')).toHaveLength(1);
+    expect(result.current.task?.status).toBe('needs_user');
+  });
+
+  it('counts only executed input toward Max actions', async () => {
+    responses = [
+      plan('Open report -> Report visible'),
+      reply('key', { key: 'enter' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Open report',
+        { ...settings, enablePlanning: true, maxTurns: 1 },
+        false,
+      );
+    });
+    // The plan did not use up the single permitted action.
+    expect(calls('execute_action')).toHaveLength(1);
+    expect(hasMessage(result.current.messages, 'Reached the action limit (1)')).toBe(
+      true,
+    );
+    expect(result.current.task?.status).toBe('stopped');
+  });
+
+  it('bounds model calls that never lead to input', async () => {
+    responses = Array.from({ length: 10 }, () => plan('Open report'));
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Open report',
+        { ...settings, enablePlanning: true, maxTurns: 1 },
+        false,
+      );
+    });
+    expect(calls('process_computer_use')).toHaveLength(7);
+    expect(
+      hasMessage(result.current.messages, 'Reached the model-call limit (7)'),
+    ).toBe(true);
+  });
+
+  // Hold the model request open until the run is stopped, like the backend,
+  // whose stop_run cancels the in-flight request.
+  function hangModelUntilStopped() {
+    let reject: ((e: unknown) => void) | undefined;
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((cmd, args) => {
+      if (cmd === 'process_computer_use')
+        return new Promise((_, r) => {
+          reject = r;
+        });
+      if (cmd === 'stop_run') reject?.('Run stopped or replaced');
+      return original(cmd, args);
+    });
+  }
+
+  it('names the time limit when it ends a run', async () => {
+    vi.useFakeTimers();
+    try {
+      hangModelUntilStopped();
+      const { result } = renderHook(() => useAgent());
+      let task!: Promise<void>;
+      act(() => {
+        task = result.current.runTask(
+          'Test',
+          { ...settings, maxRunMinutes: 1 },
+          false,
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+        await task;
+      });
+      expect(
+        hasMessage(
+          result.current.messages,
+          'Stopped: the 1-minute time limit was reached.',
+        ),
+      ).toBe(true);
+      expect(result.current.error).toContain('time limit');
+      expect(result.current.task?.status).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('names the emergency hotkey when it ends a run', async () => {
+    let emergency!: () => void;
+    mocks.listen.mockImplementation(async (_event, handler) => {
+      emergency = handler;
+      return () => {};
+    });
+    hangModelUntilStopped();
+    const { result } = renderHook(() => useAgent());
+    let task!: Promise<void>;
+    act(() => {
+      task = result.current.runTask('Test', settings, false);
+    });
+    await waitFor(() => expect(calls('process_computer_use')).toHaveLength(1));
+    await act(async () => {
+      emergency();
+      await task;
+    });
+    expect(
+      hasMessage(result.current.messages, 'Stopped by the emergency hotkey'),
+    ).toBe(true);
+    expect(result.current.error).toBeNull();
   });
 });

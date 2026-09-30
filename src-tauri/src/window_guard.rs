@@ -25,7 +25,9 @@ mod platform {
             let mut process = 0;
             GetWindowThreadProcessId(root, &mut process);
             if process == 0 || process == std::process::id() {
-                return Err("The agent cannot control its own window".into());
+                return Err(ControlError::invalid_proposal(
+                    "That point is on the AI Computer Use controller window, which is off-limits. Target the application instead.",
+                ));
             }
             let mut rect: RECT = std::mem::zeroed();
             if GetWindowRect(root, &mut rect) == 0 {
@@ -40,6 +42,47 @@ mod platform {
     }
     pub fn foreground() -> Option<WindowTarget> {
         unsafe { inspect(GetForegroundWindow()).ok() }
+    }
+    /// The foreground window if it is an ordinary application window: not this
+    /// app, the taskbar (which is briefly foreground when its buttons are
+    /// clicked), or a tool window.
+    pub fn foreground_app_window() -> Option<usize> {
+        let target = foreground()?;
+        let window = target.handle as HWND;
+        unsafe {
+            if GetWindowLongW(window, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0 {
+                return None;
+            }
+            let mut class = [0u16; 64];
+            let len = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
+            let class = String::from_utf16_lossy(&class[..len.max(0) as usize]);
+            if matches!(class.as_str(), "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
+                return None;
+            }
+        }
+        Some(target.handle)
+    }
+    pub fn own_window_is_foreground() -> bool {
+        unsafe {
+            let window = GetForegroundWindow();
+            if window.is_null() {
+                return false;
+            }
+            let mut process = 0;
+            GetWindowThreadProcessId(window, &mut process);
+            process == std::process::id()
+        }
+    }
+    /// Hand focus back to a window the user was working in. Only called while
+    /// this process is in the foreground, which Windows allows.
+    pub fn restore_focus(handle: usize) -> bool {
+        let window = handle as HWND;
+        unsafe {
+            IsWindow(window) != 0
+                && IsWindowVisible(window) != 0
+                && IsIconic(window) == 0
+                && SetForegroundWindow(window) != 0
+        }
     }
     pub fn snapshot() -> Vec<WindowTarget> {
         unsafe extern "system" fn collect(window: HWND, data: isize) -> i32 {
@@ -106,6 +149,15 @@ mod platform {
     use super::{ControlError, WindowTarget};
     pub fn foreground() -> Option<WindowTarget> {
         None
+    }
+    pub fn foreground_app_window() -> Option<usize> {
+        None
+    }
+    pub fn own_window_is_foreground() -> bool {
+        false
+    }
+    pub fn restore_focus(_: usize) -> bool {
+        false
     }
     pub fn snapshot() -> Vec<WindowTarget> {
         Vec::new()

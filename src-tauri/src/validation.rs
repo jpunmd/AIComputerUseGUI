@@ -150,6 +150,35 @@ pub fn is_mutating(action: &ActionResult) -> bool {
     )
 }
 
+/// Start-menu and shell shortcuts that Windows handles whatever window has
+/// focus, so they need no captured target (the controller may be focused).
+const SHELL_CHORDS: [&str; 5] = ["win", "win+d", "win+e", "win+r", "win+s"];
+
+pub fn is_shell_chord(action: &ActionResult) -> bool {
+    if action.action != "key" {
+        return false;
+    }
+    let Some(key) = action.arguments.key.as_deref() else {
+        return false;
+    };
+    let chord = key
+        .split('+')
+        .map(|part| {
+            match part
+                .trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_lowercase()
+                .as_str()
+            {
+                "meta" | "cmd" | "command" | "super" => "win".to_string(),
+                other => other.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+");
+    SHELL_CHORDS.contains(&chord.as_str())
+}
+
 pub fn pixel(value: f64, base: f64, size: u32, origin: i32) -> i32 {
     origin + (value / base * size.saturating_sub(1) as f64).round() as i32
 }
@@ -223,6 +252,34 @@ mod tests {
         assert_eq!(pixel(0.0, 1000.0, 1920, -1920), -1920);
         assert_eq!(pixel(1000.0, 1000.0, 1920, -1920), -1);
         assert_eq!(pixel(1000.0, 1000.0, 1920, 0), 1919);
+    }
+    #[test]
+    fn only_allowlisted_shell_chords_skip_the_target_window() {
+        for key in [
+            "win",
+            "Win",
+            "meta",
+            "cmd+r",
+            "WIN+S",
+            " win + d ",
+            "super+e",
+        ] {
+            let a = action(serde_json::json!({"action":"key","arguments":{"key":key}}));
+            assert!(is_shell_chord(&a), "{key}");
+        }
+        for key in [
+            "enter",
+            "win+up",
+            "ctrl+win+d",
+            "alt+f4",
+            "win+shift+s",
+            "r",
+        ] {
+            let a = action(serde_json::json!({"action":"key","arguments":{"key":key}}));
+            assert!(!is_shell_chord(&a), "{key}");
+        }
+        let typed = action(serde_json::json!({"action":"type","arguments":{"text":"win"}}));
+        assert!(!is_shell_chord(&typed));
     }
     #[test]
     fn bounding_boxes_must_be_collapsed_before_execution() {

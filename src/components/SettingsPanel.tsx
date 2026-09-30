@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server, RefreshCw, FileText } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Settings } from '../types';
-import { DEFAULT_SYSTEM_PROMPT, pickModel } from '../hooks/useSettings';
+import { MAX_EXTRA_INSTRUCTIONS, pickModel } from '../hooks/useSettings';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -204,32 +204,38 @@ export function SettingsPanel({
             </button>
           </div>
 
-          {/* System Prompt */}
+          {/* Additional instructions */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="block text-sm font-medium text-ink-300">
+              <label
+                htmlFor="extra-instructions"
+                className="block text-sm font-medium text-ink-300"
+              >
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4" />
-                  System Prompt
+                  Additional Instructions
                 </div>
               </label>
               <button
-                onClick={() => onUpdateSettings({ systemPrompt: DEFAULT_SYSTEM_PROMPT })}
-                className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors"
+                onClick={() => onUpdateSettings({ extraInstructions: '' })}
+                disabled={!settings.extraInstructions}
+                className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <RotateCcw className="w-3 h-3" />
-                Reset to Default
+                <X className="w-3 h-3" />
+                Clear
               </button>
             </div>
             <textarea
-              value={settings.systemPrompt}
-              onChange={(e) => onUpdateSettings({ systemPrompt: e.target.value })}
-              rows={10}
+              id="extra-instructions"
+              value={settings.extraInstructions}
+              onChange={(e) => onUpdateSettings({ extraInstructions: e.target.value })}
+              rows={4}
+              maxLength={MAX_EXTRA_INSTRUCTIONS}
               className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 placeholder-ink-500 focus:border-primary-500 transition-colors font-mono text-xs resize-y"
-              placeholder="Enter system prompt..."
+              placeholder="Optional, e.g. Prefer keyboard shortcuts. Use Firefox for web tasks."
             />
             <p className="text-xs text-ink-500">
-              The system prompt sent to the model. Defines how the AI interprets commands and interacts with the computer.
+              Optional. Added to the built-in instructions, which include the action format and safety rules and update with the app.
             </p>
           </div>
 
@@ -248,14 +254,33 @@ export function SettingsPanel({
               className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
             />
             <p className="text-xs text-ink-500">
-              Delay after each action before taking a screenshot. Increase if the screenshot captures mid-action/loading states.
+              Minimum wait after each action before the next screenshot.
             </p>
           </div>
 
-          {/* Max Turns */}
+          {/* Settle timeout */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-ink-300">
-              Max Turns
+              Screen Settle Timeout (ms)
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={10000}
+              step={250}
+              value={settings.settleTimeoutMs}
+              onChange={(e) => onUpdateSettings({ settleTimeoutMs: Math.max(0, parseInt(e.target.value) || 0) })}
+              className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
+            />
+            <p className="text-xs text-ink-500">
+              After the delay, wait up to this long for animations and page loads to stop before taking the screenshot. It ends as soon as the screen is still. 0 turns it off.
+            </p>
+          </div>
+
+          {/* Max actions */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-ink-300">
+              Max Actions
             </label>
             <input
               type="number"
@@ -267,7 +292,26 @@ export function SettingsPanel({
               className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
             />
             <p className="text-xs text-ink-500">
-              Maximum number of actions before automatically stopping. Prevents infinite loops.
+              Maximum number of mouse/keyboard actions per run. Planning, completion checks and corrections don't count, but are capped separately.
+            </p>
+          </div>
+
+          {/* Time limit */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-ink-300">
+              Time Limit (minutes)
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={240}
+              step={5}
+              value={settings.maxRunMinutes}
+              onChange={(e) => onUpdateSettings({ maxRunMinutes: Math.max(1, parseInt(e.target.value) || 20) })}
+              className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
+            />
+            <p className="text-xs text-ink-500">
+              A run stops after this long, even if it has actions left.
             </p>
           </div>
 
@@ -318,6 +362,25 @@ export function SettingsPanel({
                 }`}
               />
             </button>
+          </div>
+
+          {/* Output token limit */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-ink-300">
+              Max Output Tokens
+            </label>
+            <input
+              type="number"
+              min={256}
+              max={32768}
+              step={1024}
+              value={settings.maxTokens}
+              onChange={(e) => onUpdateSettings({ maxTokens: parseInt(e.target.value) || 8192 })}
+              className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
+            />
+            <p className="text-xs text-ink-500">
+              Limit for each model reply, including its thinking. If replies are rejected for hitting the limit, raise it.
+            </p>
           </div>
 
           {/* Task planning */}

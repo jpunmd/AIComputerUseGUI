@@ -1,15 +1,83 @@
 //! Parse only final model output. Reasoning is never an execution channel.
 use crate::types::*;
 
-/// Share one schema with the tool definition shown to the model.
+/// For each group of actions: the fields it must send and the fields it may
+/// send, besides the report fields any action may add. Mirrors
+/// `validation::validate`.
+type ActionFields = (
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static [&'static str],
+);
+const ACTION_FIELDS: [ActionFields; 9] = [
+    (
+        &["click", "left_click", "right_click", "double_click"],
+        &["coordinate"],
+        &[],
+    ),
+    (
+        &["left_click_drag"],
+        &["start_coordinate", "end_coordinate"],
+        &[],
+    ),
+    (&["scroll"], &["coordinate", "direction"], &["amount"]),
+    (&["type"], &["text"], &[]),
+    (&["key"], &["key"], &[]),
+    (&["wait", "screenshot"], &[], &[]),
+    (&["plan"], &["steps"], &["reason"]),
+    (&["done", "confirm"], &["text"], &[]),
+    (&["none"], &[], &["text"]),
+];
+const REPORT_FIELDS: [&str; 3] = ["screen", "last_action", "step_done"];
+
+/// Built from the same flat tool definition shown to the model, as one
+/// variant per group of actions. Grammar-constrained servers (llama.cpp) emit
+/// required properties first and then optional ones in schema order, and can
+/// never return to one they skipped. In a single flat schema every field was
+/// optional, so a model that opened a plan with its reason could never add the
+/// steps it needs (steps is declared first). Per-action variants make the
+/// needed fields required, so they come straight after the action name.
 pub fn response_format(coordinate_base: f64) -> serde_json::Value {
     let tool: serde_json::Value =
         serde_json::from_str(include_str!("../../src/agent/computer-tool.json"))
             .expect("bundled computer tool schema must be valid JSON");
-    let mut arguments = tool["function"]["parameters"].clone();
+    let mut fields = tool["function"]["parameters"]["properties"].clone();
     for field in ["coordinate", "start_coordinate", "end_coordinate"] {
-        arguments["properties"][field]["items"]["maximum"] = coordinate_base.into();
+        fields[field]["items"]["maximum"] = coordinate_base.into();
     }
+    let fields = fields
+        .as_object()
+        .expect("computer tool must declare properties");
+    let variants: Vec<_> = ACTION_FIELDS
+        .iter()
+        .map(|(actions, required, optional)| {
+            let mut properties = serde_json::Map::new();
+            properties.insert(
+                "action".into(),
+                serde_json::json!({"type": "string", "enum": actions}),
+            );
+            // Keep the file's order (which the prompt examples follow).
+            for (name, schema) in fields {
+                let name = name.as_str();
+                if required.contains(&name)
+                    || optional.contains(&name)
+                    || REPORT_FIELDS.contains(&name)
+                {
+                    properties.insert(name.into(), schema.clone());
+                }
+            }
+            let required: Vec<&str> = std::iter::once("action")
+                .chain(required.iter().copied())
+                .collect();
+            serde_json::json!({
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false
+            })
+        })
+        .collect();
+    let arguments = serde_json::json!({ "anyOf": variants });
     serde_json::json!({
         "type": "json_schema",
         "json_schema": {
@@ -100,11 +168,12 @@ pub fn parse_final_action(text: &str) -> Result<ActionResult, String> {
 }
 
 pub fn parse_response(choice: &ChatChoice, final_text: &str) -> Result<ActionResult, String> {
-    if matches!(
-        choice.finish_reason.as_deref(),
-        Some("length" | "content_filter")
-    ) {
-        return Err("The model response was truncated or filtered; no action executed".into());
+    match choice.finish_reason.as_deref() {
+        Some("length") => return Err("The model hit the output token limit before finishing; no action executed. Raise Max output tokens in Settings or turn off thinking.".into()),
+        Some("content_filter") => {
+            return Err("The model server filtered the response; no action executed".into())
+        }
+        _ => {}
     }
     match choice.message.tool_calls.as_slice() {
         [] => parse_final_action(final_text),
@@ -131,37 +200,74 @@ pub fn parse_response(choice: &ChatChoice, final_text: &str) -> Result<ActionRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn variants(format: &serde_json::Value) -> Vec<serde_json::Value> {
+        format["json_schema"]["schema"]["properties"]["arguments"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    fn keys(v: &serde_json::Value) -> Vec<String> {
+        v.as_object().unwrap().keys().cloned().collect()
+    }
+
     #[test]
     fn schema_is_flat_and_nested_progress_is_rejected() {
         let format = response_format(1000.0);
-        let args = &format["json_schema"]["schema"]["properties"]["arguments"];
-        assert_eq!(args["additionalProperties"], false);
-        assert!(args["properties"].get("progress").is_none());
-        for field in ["screen", "last_action", "step_done", "steps", "reason"] {
-            assert!(args["properties"].get(field).is_some());
-        }
-        assert_eq!(args["properties"]["steps"]["maxItems"], 7);
-        // Grammar-constrained servers emit properties in schema order. Keep the
-        // file's order (which the prompt examples follow), not alphabetical:
-        // text must not be forced last, or a model that wants to add screen
-        // after it can only keep extending the string.
         let file: serde_json::Value =
             serde_json::from_str(include_str!("../../src/agent/computer-tool.json")).unwrap();
-        let keys =
-            |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
-        assert_eq!(
-            keys(&args["properties"]),
-            keys(&file["function"]["parameters"]["properties"])
-        );
+        let file_fields = keys(&file["function"]["parameters"]["properties"]);
+        let mut actions = vec![];
+        for variant in variants(&format) {
+            assert_eq!(variant["additionalProperties"], false);
+            assert!(variant["properties"].get("progress").is_none());
+            for field in REPORT_FIELDS {
+                assert!(variant["properties"].get(field).is_some());
+            }
+            // Fields are flat: no nested objects, at most a list of scalars.
+            for (name, schema) in variant["properties"].as_object().unwrap() {
+                assert_ne!(schema["type"], "object", "{name}");
+                assert_ne!(schema["items"]["type"], "object", "{name}");
+            }
+            // Keep the file's order (which the prompt examples follow), not
+            // alphabetical: text must not be forced last, or a model that wants
+            // to add screen after it can only keep extending the string.
+            let order: Vec<_> = keys(&variant["properties"])[1..]
+                .iter()
+                .map(|k| file_fields.iter().position(|f| f == k).unwrap())
+                .collect();
+            assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+            actions.extend(
+                variant["properties"]["action"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| a.as_str().unwrap().to_owned()),
+            );
+        }
+        // Every action the tool offers is covered exactly once.
+        let offered: Vec<String> = file["function"]["parameters"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_owned())
+            .collect();
+        let mut sorted = actions.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), actions.len());
+        let mut expected = offered;
+        expected.sort();
+        assert_eq!(sorted, expected);
         assert_eq!(
             keys(&format["json_schema"]["schema"]["properties"]),
             ["name", "arguments"]
         );
-        assert_eq!(
-            response_format(500.0)["json_schema"]["schema"]["properties"]["arguments"]
-                ["properties"]["coordinate"]["items"]["maximum"],
-            500.0
-        );
+        for variant in variants(&response_format(500.0)) {
+            if let Some(coordinate) = variant["properties"].get("coordinate") {
+                assert_eq!(coordinate["items"]["maximum"], 500.0);
+            }
+        }
         for call in [
             r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"progress":{"next_milestone_id":"m1-1"}}}"#,
             r#"{"name":"computer","arguments":{"action":"click","coordinate":[308,977],"next_milestone_id":"m1-1"}}"#,
@@ -170,6 +276,57 @@ mod tests {
                 .unwrap_err()
                 .contains("unknown field"));
         }
+    }
+
+    #[test]
+    fn each_variant_requires_what_validation_requires() {
+        let sample = |field: &str| match field {
+            "coordinate" | "start_coordinate" | "end_coordinate" => serde_json::json!([500, 500]),
+            "direction" => "down".into(),
+            "key" => "enter".into(),
+            "steps" => serde_json::json!(["Open Chrome -> a Chrome window is visible"]),
+            _ => "x".into(),
+        };
+        for variant in variants(&response_format(1000.0)) {
+            let required: Vec<&str> = variant["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f.as_str().unwrap())
+                .collect();
+            assert_eq!(required[0], "action");
+            for action in variant["properties"]["action"]["enum"].as_array().unwrap() {
+                // The least the grammar allows is a valid action...
+                let mut arguments = serde_json::json!({"action": action});
+                for field in &required[1..] {
+                    arguments[field] = sample(field);
+                }
+                let call = serde_json::json!({"name": "computer", "arguments": arguments});
+                let parsed = parse_json_action(&call.to_string()).unwrap();
+                crate::validation::validate(&parsed, 1000.0, false)
+                    .unwrap_or_else(|e| panic!("{action}: {e}"));
+                // ...and dropping any required field is not.
+                for field in &required[1..] {
+                    let mut short = arguments.clone();
+                    short.as_object_mut().unwrap().remove(*field);
+                    let call = serde_json::json!({"name": "computer", "arguments": short});
+                    let parsed = parse_json_action(&call.to_string()).unwrap();
+                    assert!(
+                        crate::validation::validate(&parsed, 1000.0, false).is_err(),
+                        "{action} without {field}"
+                    );
+                }
+            }
+        }
+        // The regression: a replan that opens with its reason can still (and
+        // must) send steps, because steps is required for plan.
+        let plan = variants(&response_format(1000.0))
+            .into_iter()
+            .find(|v| v["properties"]["action"]["enum"] == serde_json::json!(["plan"]))
+            .unwrap();
+        assert_eq!(plan["required"], serde_json::json!(["action", "steps"]));
+        assert!(plan["properties"].get("reason").is_some());
+        assert!(plan["properties"].get("text").is_none());
     }
 
     #[test]
@@ -275,7 +432,13 @@ mod tests {
         let mut choice: ChatChoice = serde_json::from_value(serde_json::json!({"message":{"content":null,"tool_calls":[{"function":{"name":"computer","arguments":"{\"action\":\"screenshot\"}"}}]},"finish_reason":"tool_calls"})).unwrap();
         assert_eq!(parse_response(&choice, "").unwrap().action, "screenshot");
         choice.finish_reason = Some("length".into());
-        assert!(parse_response(&choice, "").is_err());
+        assert!(parse_response(&choice, "")
+            .unwrap_err()
+            .contains("output token limit"));
+        choice.finish_reason = Some("content_filter".into());
+        assert!(parse_response(&choice, "")
+            .unwrap_err()
+            .contains("filtered"));
     }
     #[test]
     fn reasoning_cannot_override_refusal_or_supply_an_action() {

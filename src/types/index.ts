@@ -1,12 +1,13 @@
 export interface Settings {
   apiEndpoint: string;
   modelId: string;
-  displayWidth: number;
-  displayHeight: number;
-  systemPrompt: string;
+  extraInstructions: string; // User text added to the built-in system prompt
   actionDelayMs: number; // Delay after action before next screenshot
-  maxTurns: number; // Maximum number of turns before stopping
+  settleTimeoutMs: number; // Then wait up to this long for the screen to stop changing (0 = off)
+  maxTurns: number; // Maximum number of executed actions before stopping
+  maxRunMinutes: number; // Wall-clock limit for one run
   screenshotMaxDimension: number; // Max width/height for screenshots sent to API
+  maxTokens: number; // Output token limit per model reply (thinking included)
   enableThinking: boolean; // Enable thinking/reasoning mode for supported models
   expandThinkingByDefault: boolean; // Show thinking blocks expanded by default
   enablePlanning: boolean;
@@ -21,11 +22,6 @@ export interface Settings {
 }
 
 export type Theme = 'light' | 'dark';
-
-export interface Coordinate {
-  x: number;
-  y: number;
-}
 
 // Flat observations the controller turns into TaskProgress.
 export interface StepReport {
@@ -54,10 +50,8 @@ export interface AgentResponse {
   format_warning?: string;
   output_text: string;
   action: ActionResult;
-  coordinate_absolute?: Coordinate;
   success: boolean;
   error?: string;
-  is_done?: boolean;
   thinking?: string;
 }
 
@@ -114,14 +108,8 @@ export interface ScreenshotWithMetadata {
   image_height: number;
   actual_screen_width: number;
   actual_screen_height: number;
-}
-
-export interface AppState {
-  isConnected: boolean;
-  isProcessing: boolean;
-  currentScreenshot: string | null;
-  messages: Message[];
-  settings: Settings;
+  // Fraction of the screen that changed since the run's previous observation.
+  screen_change?: number | null;
 }
 
 export interface TaskRecord {

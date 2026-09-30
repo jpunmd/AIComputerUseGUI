@@ -1,10 +1,32 @@
 use crate::types::*;
 use reqwest::Client;
 use serde::Deserialize;
+use std::{sync::LazyLock, time::Duration};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+// Local VLM inference on large images can legitimately take minutes. Stop
+// still cancels mid-request either way.
+const COMPLETION_TIMEOUT: Duration = Duration::from_secs(600);
+const MODELS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One pooled client for every request. The connect timeout catches an
+/// unreachable server quickly; redirects are never followed.
+static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("HTTP client must initialize")
+});
+
+/// The image a model request is about, with its pixel size.
+pub struct ModelImage<'a> {
+    pub base64: &'a str,
+    pub width: u32,
+    pub height: u32,
+}
 
 fn endpoint(base: &str, path: &str) -> Result<reqwest::Url, ApiError> {
     let mut url = reqwest::Url::parse(base)
@@ -90,7 +112,6 @@ fn unsupported_response_format(error: &ApiError) -> bool {
 }
 
 async fn request_completion(
-    client: &Client,
     endpoint: reqwest::Url,
     mut request: ChatRequest,
     original_prompt: &str,
@@ -102,7 +123,12 @@ async fn request_completion(
             return Err(ApiError::Cancelled);
         }
         let pending = async {
-            let response = client.post(endpoint.clone()).json(&request).send().await?;
+            let response = CLIENT
+                .post(endpoint.clone())
+                .timeout(COMPLETION_TIMEOUT)
+                .json(&request)
+                .send()
+                .await?;
             decode_response::<ChatResponse>(response).await
         };
         let result = tokio::select! {
@@ -126,16 +152,11 @@ async fn request_completion(
 }
 
 /// Call the vision-language model API for computer use
-#[allow(clippy::too_many_arguments)]
 pub async fn call_computer_use_api(
-    api_endpoint: &str,
-    model_id: &str,
-    screenshot_base64: &str,
+    model: &ModelConfig,
+    image: &ModelImage<'_>,
     query: &str,
-    display_width: u32,
-    display_height: u32,
     system_prompt: &str,
-    enable_thinking: bool,
     prior_turns: Option<Vec<PriorTurn>>,
     coordinate_base: f64,
     cancel: &CancellationToken,
@@ -143,10 +164,11 @@ pub async fn call_computer_use_api(
     if cancel.is_cancelled() {
         return Err(ApiError::Cancelled);
     }
-    if screenshot_base64.len() > 32 * 1024 * 1024
+    let (display_width, display_height) = (image.width, image.height);
+    if image.base64.len() > 32 * 1024 * 1024
         || query.len() > 131072
         || system_prompt.len() > 65536
-        || model_id.len() > 1024
+        || model.model_id.len() > 1024
     {
         return Err(ApiError::ApiResponseError(
             "Request exceeds the context or image size limit".into(),
@@ -168,18 +190,9 @@ pub async fn call_computer_use_api(
     {
         println!("=== API Call Debug ===");
         println!("Query length: {} chars", query.len());
-        println!("Screenshot length: {} bytes", screenshot_base64.len());
+        println!("Screenshot length: {} bytes", image.base64.len());
         println!("Screen size: {}x{}", display_width, display_height);
     }
-
-    // Connect timeout catches an unreachable server quickly; the overall
-    // timeout is generous because local VLM inference on large images can
-    // legitimately take minutes. Stop still cancels mid-request either way.
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(600))
-        .build()?;
 
     #[cfg(debug_assertions)]
     println!("System prompt length: {} chars", system_prompt.len());
@@ -191,7 +204,7 @@ pub async fn call_computer_use_api(
     // Only the current screenshot is sent; old screens are not actionable evidence.
     user_content.push(ContentPart::ImageUrl {
         image_url: ImageUrl {
-            url: format!("data:image/png;base64,{}", screenshot_base64),
+            url: format!("data:image/png;base64,{}", image.base64),
         },
     });
 
@@ -238,20 +251,19 @@ pub async fn call_computer_use_api(
     // Build the chat request
     let request = ChatRequest {
         response_format: Some(crate::protocol::response_format(coordinate_base)),
-        model: model_id.to_string(),
+        model: model.model_id.clone(),
         messages,
-        max_tokens: Some(4096),
+        max_tokens: Some(model.max_tokens()),
         chat_template_kwargs: Some(ChatTemplateKwargs {
-            enable_thinking: Some(enable_thinking),
-            preserve_thinking: Some(enable_thinking),
+            enable_thinking: Some(model.enable_thinking),
         }),
     };
 
     // Make the API request. Racing against the cancel signal lets a Stop press
     // drop the request mid-generation instead of waiting out the inference.
-    let endpoint = endpoint(api_endpoint, "chat/completions")?;
+    let endpoint = endpoint(&model.api_endpoint, "chat/completions")?;
     let (chat_response, format_warning) =
-        request_completion(&client, endpoint, request, system_prompt, cancel).await?;
+        request_completion(endpoint, request, system_prompt, cancel).await?;
 
     // Parse the response
     let raw_output_text = chat_response
@@ -295,26 +307,6 @@ pub async fn call_computer_use_api(
     #[cfg(debug_assertions)]
     println!("Parsed action: {}", action.action);
 
-    // Calculate absolute coordinates if present
-    // The model outputs coordinates in a normalized space (coordinate_base), we
-    // scale to actual screen size. display_width/height passed from frontend are
-    // the actual screen dimensions.
-    let coordinate_absolute = action.arguments.coordinate.as_ref().map(|coord| {
-        if coord.len() >= 2 {
-            // Model uses 0-coordinate_base space, scale to actual screen dimensions
-            let abs_x = coord[0] / coordinate_base * display_width as f64;
-            let abs_y = coord[1] / coordinate_base * display_height as f64;
-            #[cfg(debug_assertions)]
-            println!(
-                "Coordinate conversion: model ({}, {}) -> screen ({}, {}) [screen size: {}x{}]",
-                coord[0], coord[1], abs_x, abs_y, display_width, display_height
-            );
-            Coordinate { x: abs_x, y: abs_y }
-        } else {
-            Coordinate { x: 0.0, y: 0.0 }
-        }
-    });
-
     // Thinking priority for display:
     //   1. reasoning_content field (vLLM, llama.cpp with reasoning_format=deepseek)
     //   2. inline <think>...</think> tags (llama.cpp with reasoning_format=none)
@@ -346,27 +338,14 @@ pub async fn call_computer_use_api(
         }
     });
 
-    // Check if the action is "done" to signal task completion
-    let is_done = action.action == "done";
-
-    let response = AgentResponse {
+    Ok(AgentResponse {
         format_warning,
         output_text,
         action,
-        coordinate_absolute,
         success: true,
         error: None,
-        is_done,
         thinking,
-    };
-
-    #[cfg(debug_assertions)]
-    println!(
-        "AgentResponse: action={}, is_done={}",
-        response.action.action, response.is_done
-    );
-
-    Ok(response)
+    })
 }
 
 fn parse_and_validate(
@@ -400,10 +379,8 @@ fn rejected_response(choice: &ChatChoice, output_text: &str, error: String) -> A
             arguments: ActionResultArguments::default(),
             report: None,
         },
-        coordinate_absolute: None,
         success: false,
         error: Some(ApiError::ParseError(error).to_string()),
-        is_done: false,
         thinking: None,
     }
 }
@@ -437,8 +414,7 @@ pub struct RefineResult {
 #[allow(clippy::too_many_arguments)]
 pub async fn refine_coordinate(
     source_image: &image::RgbaImage,
-    api_endpoint: &str,
-    model_id: &str,
+    model: &ModelConfig,
     coarse_x: f64,
     coarse_y: f64,
     action_type: &str,
@@ -446,7 +422,6 @@ pub async fn refine_coordinate(
     crop_frac: f64,
     max_dimension: u32,
     coordinate_base: f64,
-    enable_thinking: bool,
     box_mode: bool,
     cancel: &CancellationToken,
 ) -> Result<RefineResult, ApiError> {
@@ -484,15 +459,16 @@ pub async fn refine_coordinate(
     // Reuse the main call path on the crop image (no history, no prior turns).
     // Report the real crop dimensions; coordinates still use the normalized grid.
     // A pass-2 failure stops execution instead of using the coarse prediction.
+    let image = ModelImage {
+        base64: &crop.base64_image,
+        width: crop.image_width,
+        height: crop.image_height,
+    };
     let resp = match call_computer_use_api(
-        api_endpoint,
-        model_id,
-        &crop.base64_image,
+        model,
+        &image,
         &focused_query,
-        crop.image_width,
-        crop.image_height,
         &system_prompt,
-        enable_thinking,
         None,
         coordinate_base,
         cancel,
@@ -611,16 +587,8 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
 
 /// Test the API connection
 pub async fn test_connection(api_endpoint: &str) -> Result<bool, ApiError> {
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-
     let endpoint = endpoint(api_endpoint, "models")?;
-    let response = client
-        .get(endpoint)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?;
+    let response = CLIENT.get(endpoint).timeout(MODELS_TIMEOUT).send().await?;
 
     Ok(response.status().is_success())
 }
@@ -651,16 +619,8 @@ impl ModelInfo {
 
 /// Fetch available models from the API endpoint
 pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-
     let endpoint = endpoint(api_endpoint, "models")?;
-    let response = client
-        .get(endpoint)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?;
+    let response = CLIENT.get(endpoint).timeout(MODELS_TIMEOUT).send().await?;
 
     let models_response: ModelsResponse = decode_response(response).await?;
     Ok(order_models(models_response.data))
@@ -729,21 +689,58 @@ mod tests {
             .to_string()
     }
 
+    fn test_model(address: &str) -> ModelConfig {
+        ModelConfig {
+            api_endpoint: address.into(),
+            model_id: "test".into(),
+            enable_thinking: false,
+            max_tokens: 8192,
+        }
+    }
+
+    const BLANK: ModelImage<'static> = ModelImage {
+        base64: "",
+        width: 100,
+        height: 100,
+    };
+
     async fn synthetic_request(address: &str) -> Result<AgentResponse, ApiError> {
         call_computer_use_api(
-            address,
-            "test",
-            "",
+            &test_model(address),
+            &BLANK,
             "synthetic screen",
-            100,
-            100,
             "Return <tool_call>JSON</tool_call>",
-            false,
             None,
             1000.0,
             &CancellationToken::new(),
         )
         .await
+    }
+
+    #[test]
+    fn model_config_uses_camel_case_and_bounds_max_tokens() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "apiEndpoint": "http://localhost:8000/v1",
+            "modelId": "m",
+            "enableThinking": true,
+            "maxTokens": 999999
+        }))
+        .unwrap();
+        assert!(config.enable_thinking);
+        assert_eq!(config.max_tokens(), MAX_MAX_TOKENS);
+        let defaults: ModelConfig =
+            serde_json::from_value(serde_json::json!({"apiEndpoint": "x", "modelId": "m"}))
+                .unwrap();
+        assert!(!defaults.enable_thinking);
+        assert_eq!(defaults.max_tokens(), 8192);
+        assert_eq!(
+            ModelConfig {
+                max_tokens: 1,
+                ..defaults
+            }
+            .max_tokens(),
+            MIN_MAX_TOKENS
+        );
     }
 
     #[tokio::test]
@@ -757,6 +754,11 @@ mod tests {
         assert_eq!(
             requests[0]["response_format"],
             crate::protocol::response_format(1000.0)
+        );
+        assert_eq!(requests[0]["max_tokens"], 8192);
+        assert_eq!(
+            requests[0]["chat_template_kwargs"],
+            serde_json::json!({"enable_thinking": false})
         );
         let prompt = requests[0]["messages"][0]["content"][0]["text"]
             .as_str()
@@ -890,10 +892,16 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             source.save(dir.join("source.png")).unwrap();
         }
+        let model = ModelConfig {
+            api_endpoint: endpoint,
+            model_id: model,
+            enable_thinking: true,
+            max_tokens: 8192,
+        };
         for boxes in [false, true] {
-            let result = refine_coordinate(&source, &endpoint, &model, 146.0, 900.0, "click",
+            let result = refine_coordinate(&source, &model, 146.0, 900.0, "click",
                 "Original task: Open Chrome. Current milestone: Open Chrome from the taskbar. Expected result: Chrome browser opens. Identify the round multicolored Chrome icon.",
-                0.3, 1280, 1000.0, true, boxes, &CancellationToken::new()).await.unwrap();
+                0.3, 1280, 1000.0, boxes, &CancellationToken::new()).await.unwrap();
             let px = crate::validation::pixel(result.coordinate[0], 1000.0, 1920, 0);
             let py = crate::validation::pixel(result.coordinate[1], 1000.0, 1080, 0);
             println!(
@@ -985,14 +993,10 @@ mod tests {
         let request_cancel = cancel.clone();
         let request = tokio::spawn(async move {
             call_computer_use_api(
-                &address,
+                &test_model(&address),
+                &BLANK,
                 "test",
-                "",
                 "test",
-                100,
-                100,
-                "test",
-                false,
                 None,
                 1000.0,
                 &request_cancel,

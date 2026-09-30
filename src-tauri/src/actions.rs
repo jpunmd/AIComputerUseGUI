@@ -46,7 +46,15 @@ pub fn validate_keys(action: &ActionResult) -> Result<(), ActionError> {
             if i + 1 < parts.len()
                 && !matches!(
                     part.trim().to_lowercase().as_str(),
-                    "ctrl" | "control" | "alt" | "shift" | "meta" | "win" | "cmd" | "command"
+                    "ctrl"
+                        | "control"
+                        | "alt"
+                        | "shift"
+                        | "meta"
+                        | "win"
+                        | "cmd"
+                        | "command"
+                        | "super"
                 )
             {
                 return Err(ActionError::InvalidAction(
@@ -73,6 +81,12 @@ pub fn execute_action(
     if !validation::is_mutating(action) {
         return Ok(());
     }
+    let new_enigo =
+        || Enigo::new(&Settings::default()).map_err(|e| ActionError::ExecutionError(e.to_string()));
+    if target.is_none() && validation::is_shell_chord(action) {
+        // Windows routes these to the shell regardless of focus.
+        return press_chord(&mut new_enigo()?, action, cancel, || Ok(()));
+    }
     let target = target.ok_or_else(|| {
         ActionError::InvalidAction(
             "No external target window; click the target application first".into(),
@@ -93,8 +107,7 @@ pub fn execute_action(
         }
         Ok(())
     };
-    let mut enigo =
-        Enigo::new(&Settings::default()).map_err(|e| ActionError::ExecutionError(e.to_string()))?;
+    let mut enigo = new_enigo()?;
     let input_err = |e: enigo::InputError| ActionError::ExecutionError(e.to_string());
     match action.action.as_str() {
         "click" | "left_click" | "right_click" | "double_click" => {
@@ -194,44 +207,54 @@ pub fn execute_action(
                     .map_err(input_err)?;
             }
         }
-        "key" => {
-            let mut keys = action
-                .arguments
-                .key
-                .as_deref()
-                .unwrap_or_default()
-                .split('+')
-                .map(parse_key)
-                .collect::<Result<Vec<_>, _>>()?;
-            let main = keys
-                .pop()
-                .ok_or_else(|| ActionError::InvalidAction("Missing key".into()))?;
-            let mut held = Vec::new();
-            let result = (|| {
-                for key in keys {
-                    check(cancel)?;
-                    guard(true)?;
-                    enigo.key(key, Direction::Press).map_err(input_err)?;
-                    held.push(key);
-                }
-                check(cancel)?;
-                guard(true)?;
-                enigo.key(main, Direction::Click).map_err(input_err)
-            })();
-            let mut release_error = None;
-            for key in held.into_iter().rev() {
-                if let Err(e) = enigo.key(key, Direction::Release) {
-                    release_error = Some(input_err(e));
-                }
-            }
-            result?;
-            if let Some(err) = release_error {
-                return Err(err);
-            }
-        }
+        "key" => press_chord(&mut enigo, action, cancel, || guard(true))?,
         _ => return Err(ActionError::InvalidAction("Unsupported action".into())),
     }
     Ok(())
+}
+
+/// Press modifiers, click the final key, and always release what was held.
+fn press_chord(
+    enigo: &mut Enigo,
+    action: &ActionResult,
+    cancel: &CancellationToken,
+    guard: impl Fn() -> Result<(), ActionError>,
+) -> Result<(), ActionError> {
+    let input_err = |e: enigo::InputError| ActionError::ExecutionError(e.to_string());
+    let mut keys = action
+        .arguments
+        .key
+        .as_deref()
+        .unwrap_or_default()
+        .split('+')
+        .map(parse_key)
+        .collect::<Result<Vec<_>, _>>()?;
+    let main = keys
+        .pop()
+        .ok_or_else(|| ActionError::InvalidAction("Missing key".into()))?;
+    let mut held = Vec::new();
+    let result = (|| {
+        for key in keys {
+            check(cancel)?;
+            guard()?;
+            enigo.key(key, Direction::Press).map_err(input_err)?;
+            held.push(key);
+        }
+        check(cancel)?;
+        guard()?;
+        enigo.key(main, Direction::Click).map_err(input_err)
+    })();
+    let mut release_error = None;
+    for key in held.into_iter().rev() {
+        if let Err(e) = enigo.key(key, Direction::Release) {
+            release_error = Some(input_err(e));
+        }
+    }
+    result?;
+    match release_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 /// Parse a key string to an enigo Key
@@ -256,7 +279,7 @@ fn parse_key(key_str: &str) -> Result<Key, ActionError> {
         "ctrl" | "control" => Key::Control,
         "alt" => Key::Alt,
         "shift" => Key::Shift,
-        "meta" | "win" | "cmd" | "command" => Key::Meta,
+        "meta" | "win" | "cmd" | "command" | "super" => Key::Meta,
         "capslock" => Key::CapsLock,
         #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
         "insert" | "ins" => Key::Insert,

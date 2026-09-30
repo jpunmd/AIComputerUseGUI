@@ -1,32 +1,28 @@
 use serde::{Deserialize, Serialize};
 
-/// Settings for the computer use agent (used by frontend, kept for API compatibility)
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Settings {
+pub const MIN_MAX_TOKENS: u32 = 256;
+pub const MAX_MAX_TOKENS: u32 = 32768;
+
+/// Which model to ask and how. Sent by the frontend with every inference.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfig {
     pub api_endpoint: String,
     pub model_id: String,
-    pub display_width: u32,
-    pub display_height: u32,
+    #[serde(default)]
+    pub enable_thinking: bool,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
 }
 
-#[allow(dead_code)]
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            api_endpoint: "http://localhost:8000/v1".to_string(),
-            model_id: "Qwen/Qwen3-VL-30B-A3B-Instruct".to_string(),
-            display_width: 1000,
-            display_height: 1000,
-        }
+fn default_max_tokens() -> u32 {
+    8192
+}
+
+impl ModelConfig {
+    pub fn max_tokens(&self) -> u32 {
+        self.max_tokens.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
     }
-}
-
-/// Coordinate in the image space
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Coordinate {
-    pub x: f64,
-    pub y: f64,
 }
 
 /// Action arguments from the model (inside the tool_call)
@@ -160,14 +156,9 @@ pub struct AgentResponse {
     pub format_warning: Option<String>,
     pub output_text: String,
     pub action: ActionResult,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub coordinate_absolute: Option<Coordinate>,
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Whether the agent believes the task is complete
-    #[serde(default)]
-    pub is_done: bool,
     /// The agent's reasoning/thinking about what to do next
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
@@ -201,21 +192,14 @@ pub struct ImageUrl {
 pub struct ChatTemplateKwargs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_thinking: Option<bool>,
-    /// Preserve thinking from prior assistant turns when reconstructing the
-    /// chat history. Chat-template kwarg for preserving prior reasoning.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preserve_thinking: Option<bool>,
 }
 
-/// A previously executed turn used to rebuild conversation history so the
-/// model has continuity (and access to prior thinking when preserve_thinking
-/// is enabled).
+/// A previous request/answer pair replayed as text for continuity. Reasoning
+/// is never replayed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriorTurn {
     pub user_query: String,
     pub assistant_content: String,
-    #[serde(default)]
-    pub assistant_thinking: Option<String>,
 }
 
 /// OpenAI-compatible chat request

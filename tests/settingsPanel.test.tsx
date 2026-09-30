@@ -44,6 +44,31 @@ describe('Review each action setting', () => {
   });
 });
 
+describe('Additional instructions', () => {
+  it('edits only user text, never the built-in prompt', () => {
+    const onUpdateSettings = vi.fn();
+    render(
+      <SettingsPanel
+        settings={{ ...DEFAULT_SETTINGS, extraInstructions: 'Use Firefox.' }}
+        onUpdateSettings={onUpdateSettings}
+        onResetSettings={vi.fn()}
+        onTestConnection={vi.fn()}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('System Prompt')).toBeNull();
+    const field = screen.getByLabelText('Additional Instructions');
+    expect((field as HTMLTextAreaElement).value).toBe('Use Firefox.');
+    fireEvent.change(field, { target: { value: 'Prefer shortcuts.' } });
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      extraInstructions: 'Prefer shortcuts.',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(onUpdateSettings).toHaveBeenCalledWith({ extraInstructions: '' });
+  });
+});
+
 describe('Theme setting', () => {
   it('remembers light or dark, and settles the old "system" value to the OS appearance', () => {
     expect(sanitizeSettings({ theme: 'dark' }).theme).toBe('dark');

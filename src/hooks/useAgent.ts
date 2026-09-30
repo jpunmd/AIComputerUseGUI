@@ -1,5 +1,9 @@
 import { buildSystemPrompt } from '../agent/protocol';
-import { errorMessage, isScreenChanged } from '../agent/controlError';
+import {
+  errorMessage,
+  isInvalidProposal,
+  isScreenChanged,
+} from '../agent/controlError';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -14,8 +18,9 @@ import {
 import {
   TaskMemory,
   TaskUpdateError,
-  actionSignature,
+  actionKey,
   isInput,
+  isUnchanged,
 } from '../agent/memory';
 
 export interface ConfirmationRequest {
@@ -44,8 +49,23 @@ function describeAction(action: ActionResult): string {
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // Local models occasionally need more than one nudge to fix their wire format.
 export const MAX_FORMAT_REPAIRS = 2;
+// Consecutive proposals the controller may reject (before any input) and
+// send back to the model for a different action.
+export const MAX_REJECTED_PROPOSALS = 2;
 // Characters of a rejected response replayed to the model for its repair.
 export const MAX_REJECTED_REPLAY = 600;
+// Model calls allowed per permitted action, plus a few for planning,
+// verification and repairs, so bookkeeping never ends a run early.
+export const modelCallLimit = (maxActions: number) => 2 * maxActions + 5;
+
+type StopReason = 'user' | 'emergency' | 'time_limit';
+
+const modelConfig = (settings: Settings) => ({
+  apiEndpoint: settings.apiEndpoint,
+  modelId: settings.modelId,
+  enableThinking: settings.enableThinking,
+  maxTokens: settings.maxTokens,
+});
 
 export function useAgent() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -63,6 +83,7 @@ export function useAgent() {
   const [task, setTask] = useState<TaskRecord | null>(null);
   const busy = useRef(false);
   const stopped = useRef(false);
+  const stopReason = useRef<StopReason>('user');
   const runId = useRef<string | null>(null);
   const observation = useRef<string | null>(null);
   const confirmation = useRef<((value: Approval) => void) | null>(null);
@@ -96,7 +117,9 @@ export function useAgent() {
     return runId.current;
   }, []);
 
-  const stopTask = useCallback(() => {
+  const halt = useCallback((reason: StopReason) => {
+    // The first reason wins: a time limit after a user stop is still a user stop.
+    if (!stopped.current) stopReason.current = reason;
     stopped.current = true;
     if (busy.current) setIsStopping(true);
     confirmation.current?.(false);
@@ -105,17 +128,19 @@ export function useAgent() {
     if (runId.current)
       void invoke('stop_run', { runId: runId.current }).catch(() => {});
   }, []);
+  const stopTask = useCallback(() => halt('user'), [halt]);
 
   useEffect(() => {
-    const unlisten = listen('agent-stopped', stopTask);
+    const unlisten = listen('agent-stopped', () => halt('emergency'));
     return () => {
-      stopTask();
+      halt('user');
       void unlisten.then((fn) => fn()).catch(() => {});
     };
-  }, [stopTask]);
+  }, [halt]);
 
   const start = useCallback(async (supervised: boolean) => {
     stopped.current = false;
+    stopReason.current = 'user';
     setIsStopping(false);
     setIsDirectControl(!supervised);
     observation.current = null;
@@ -174,11 +199,12 @@ export function useAgent() {
         {
           runId: assertRunning(),
           maxDimension: settings.screenshotMaxDimension,
+          settleMs: settings.settleTimeoutMs,
         },
       );
       assertRunning();
       observation.current = result.observation_id;
-      memory.current.observe(result.observation_id);
+      memory.current.observe(result.observation_id, result.screen_change);
       setCurrentScreenshot(result.base64_image);
       actionPreview.current = undefined;
       return result;
@@ -199,16 +225,12 @@ export function useAgent() {
         runId: assertRunning(),
         screenshotBase64: shot.base64_image,
         query: prompt,
-        apiEndpoint: settings.apiEndpoint,
-        modelId: settings.modelId,
+        model: modelConfig(settings),
         displayWidth: shot.image_width,
         displayHeight: shot.image_height,
-        systemPrompt:
-          buildSystemPrompt(settings.systemPrompt) +
-          (boxFirst
-            ? '\nFor click actions, coordinate must be a tight [x0,y0,x1,y1] bounding box in 0–1000 space.'
-            : ''),
-        enableThinking: settings.enableThinking,
+        systemPrompt: buildSystemPrompt(settings.extraInstructions, {
+          boxClicks: boxFirst,
+        }),
         priorTurns: memory.current.context(),
       });
       assertRunning();
@@ -273,15 +295,13 @@ export function useAgent() {
         }>('refine_coordinate', {
           runId: assertRunning(),
           observationId: shot.observation_id,
-          apiEndpoint: settings.apiEndpoint,
-          modelId: settings.modelId,
+          model: modelConfig(settings),
           coarseX: point[0],
           coarseY: point[1],
           actionType: response.action.action,
           query: targetContext,
           cropFraction: settings.zoomCropFraction,
           maxDimension: settings.screenshotMaxDimension,
-          enableThinking: settings.enableThinking,
           boxMode: settings.boxRefine,
         });
         assertRunning();
@@ -439,10 +459,12 @@ export function useAgent() {
       else memory.current.task.status = 'running';
       publishTask();
       message('user', query);
-      let turn = 0,
+      let calls = 0,
+        actions = 0,
         repeat = 0,
         previous = '',
         repair = 0,
+        rejected = 0,
         verifying = false,
         completionRepair = 0,
         screenRetries = 0,
@@ -453,18 +475,23 @@ export function useAgent() {
         ? query +
           '\nRecheck saved milestone evidence against this fresh screen. Historical facts are context, not current proof.'
         : query;
-      const timer = setTimeout(stopTask, 20 * 60 * 1000);
+      const minutes = Math.min(240, Math.max(1, settings.maxRunMinutes || 20));
+      const timer = setTimeout(() => halt('time_limit'), minutes * 60 * 1000);
+      // Only executed input counts toward the action limit; planning,
+      // verification and repairs are bounded separately by the call limit.
+      const maxActions = Math.min(100, Math.max(1, settings.maxTurns || 20));
+      const maxCalls = modelCallLimit(maxActions);
       try {
         await start(supervised);
-        const maxTurns = Math.min(100, Math.max(1, settings.maxTurns || 20));
-        while (turn < maxTurns) {
+        while (actions < maxActions && calls < maxCalls) {
           assertRunning();
-          setCurrentTurn(turn + 1);
+          setCurrentTurn(actions + 1);
           const shot = await capture(settings);
+          calls++;
           const planning =
             memory.current.task?.status === 'planning' || requireReplan;
           const phasePrompt = requireReplan
-            ? 'The previous approach repeated without progress. Return ONLY a plan action: reason (what went wrong) and steps with a different approach for the work still to do. Finished steps are kept automatically. Keep the original constraints. Do not propose input.'
+            ? 'The previous approach repeated without progress. Return ONLY a plan action: steps with a different approach for the work still to do, then reason (what went wrong). Finished steps are kept automatically. Keep the original constraints. Do not propose input.'
             : planning
               ? 'Make a short plan for the original task. Return only a plan action whose steps are one to seven short strings like "Open Chrome -> a Chrome window is visible". Each step must be something done on screen with a visible result; do not add steps for reading, checking or reporting the answer, because done does that. Do not act yet.'
               : verifying
@@ -475,7 +502,7 @@ export function useAgent() {
             (repair > 0 && phasePrompt !== next ? '\n' + next : '');
           let response: AgentResponse;
           try {
-            response = await processTurn(prompt, settings, shot, turn + 1);
+            response = await processTurn(prompt, settings, shot, calls);
             if (planning && response.action.action !== 'plan')
               throw new TaskUpdateError(
                 'return a plan before attempting input',
@@ -515,7 +542,6 @@ export function useAgent() {
                 'Your last output was invalid: ' +
                 String(err) +
                 '. Return exactly one complete final computer tool_call with valid arguments. No input was executed for that proposal.';
-              turn++;
               continue;
             }
             throw err;
@@ -538,7 +564,6 @@ export function useAgent() {
             }
             next =
               'Carry out the first unfinished milestone, one action at a time.';
-            turn++;
             continue;
           }
           if (action.action === 'done') {
@@ -552,12 +577,10 @@ export function useAgent() {
               next =
                 'Completion is not yet supported. Review the current screen and finish these steps (set step_done when one is visibly done), or explain what is blocked:\n' +
                 memory.current.completionGaps();
-              turn++;
               continue;
             }
             if (!verifying) {
               verifying = true;
-              turn++;
               continue;
             }
             memory.current.task!.status = 'completed';
@@ -584,12 +607,13 @@ export function useAgent() {
             if (!allowed) throw new Error('Action denied by user');
             next =
               'The user agreed to continue. Propose the next exact action; executor approval is still required in supervised mode.';
-            turn++;
             continue;
           }
-          const signature = actionSignature(action, shot.base64_image);
-          repeat = signature === previous ? repeat + 1 : 1;
-          previous = signature;
+          // The same action again on a screen the last one did not visibly change.
+          const key = actionKey(action);
+          repeat =
+            key === previous && isUnchanged(shot.screen_change) ? repeat + 1 : 1;
+          previous = key;
           const recovery =
             repeat >= 3
               ? 'The same action and screen repeated without progress.'
@@ -603,13 +627,37 @@ export function useAgent() {
               );
             requireReplan = true;
             verifying = false;
-            turn++;
             continue;
           }
           try {
             await performAction(action);
           } catch (err) {
             assertRunning();
+            if (
+              isInvalidProposal(err) &&
+              !err.input_may_have_been_sent &&
+              rejected < MAX_REJECTED_PROPOSALS
+            ) {
+              // Nothing was sent, so the model can simply pick another action.
+              rejected++;
+              const reason = 'Rejected before any input: ' + errorMessage(err);
+              message(
+                'system',
+                `The controller rejected that action before any input was sent. Asking the model for a different action (${rejected}/${MAX_REJECTED_PROPOSALS}).\n` +
+                  errorMessage(err),
+              );
+              memory.current.interrupted(reason);
+              memory.current.record('Controller execution result', reason);
+              publishTask();
+              next =
+                'Your last proposed action was rejected before any input was sent: ' +
+                errorMessage(err) +
+                ' Choose a different action from this screen.';
+              previous = '';
+              repeat = 0;
+              verifying = false;
+              continue;
+            }
             if (isScreenChanged(err)) {
               const outcome = err.input_may_have_been_sent
                 ? 'Some input may have been sent. Inspect the new screen and set last_action before any further input. Do not blindly repeat the previous action.'
@@ -643,7 +691,6 @@ export function useAgent() {
                 await delay(100);
               }
               assertRunning();
-              turn++;
               continue;
             }
             if (!stopped.current)
@@ -652,8 +699,10 @@ export function useAgent() {
               );
             throw err;
           }
+          actions++;
           screenRetries = 0;
           completionRepair = 0;
+          rejected = 0;
           next =
             'Check whether the previous input achieved its intended result. Continue the next unfinished milestone with one action. If stuck, change approach or ask for help.';
           for (
@@ -664,7 +713,6 @@ export function useAgent() {
             assertRunning();
             await delay(100);
           }
-          turn++;
         }
         if (
           memory.current.task?.status === 'running' ||
@@ -673,7 +721,9 @@ export function useAgent() {
           memory.current.task.status = 'stopped';
           message(
             'system',
-            `Reached the turn limit (${Math.min(100, settings.maxTurns)}). Completion was not verified.`,
+            actions >= maxActions
+              ? `Reached the action limit (${maxActions}). Completion was not verified.`
+              : `Reached the model-call limit (${maxCalls}) after ${actions} actions. Completion was not verified.`,
           );
         }
       } catch (err) {
@@ -681,10 +731,15 @@ export function useAgent() {
           memory.current.task.status = stopped.current
             ? 'stopped'
             : 'needs_user';
-        const text = stopped.current
-          ? 'Execution stopped by user or emergency/time limit.'
-          : errorMessage(err);
-        if (!stopped.current) setError(text);
+        const timedOut = stopped.current && stopReason.current === 'time_limit';
+        const text = !stopped.current
+          ? errorMessage(err)
+          : timedOut
+            ? `Stopped: the ${minutes}-minute time limit was reached.`
+            : stopReason.current === 'emergency'
+              ? 'Stopped by the emergency hotkey (Ctrl+Alt+F12).'
+              : 'Execution stopped by user.';
+        if (!stopped.current || timedOut) setError(text);
         message('system', text);
       } finally {
         clearTimeout(timer);
@@ -711,7 +766,7 @@ export function useAgent() {
       processTurn,
       performAction,
       requestApproval,
-      stopTask,
+      halt,
       publishTask,
       message,
       start,

@@ -23,13 +23,13 @@ npm run tauri dev
 Build for production with `npm run tauri build`.
 
 1. Start your local vision model server. In Settings, enter its API base URL (such as `http://localhost:8000/v1`). If the saved model is not one the server lists, the app switches to one it does; with several models, pick one from the list.
-2. Test the connection. Put the target application on the **primary monitor** and keep its controls visible beside this controller.
+2. Test the connection. Put the target application on the **primary monitor** and keep its controls visible beside this controller. When you start a run, focus returns to the application window you last used, so the first action can type into it.
 3. Enter a task with clear completion criteria. Planning is enabled by default. Select **Plan only** to inspect milestones before any input executes.
 4. With **Review each action** enabled, choose **Allow once** for one action or **Allow for this task** to let the remaining mouse/keyboard actions run automatically. The dialog previews the proposed click. An unanswered proposal expires after 60 seconds.
 5. Use **Continue task** to resume with a fresh screenshot and the original goal. Restoring a session never restores permission to execute.
 6. Press **Stop**, or **Ctrl+Alt+F12** even while another application has focus, to cancel. Cancellation cannot undo input already delivered to Windows.
 
-Every submitted task plans, acts, observes, and continues up to the configured turn limit (maximum 100) or 20 minutes. There is no separate execution-mode switch. **Review each action** is in the main toolbar and in Settings; both control one saved default for new and resumed runs (on by default). Turning it off enables direct control for every run until it is turned back on; a warning stays visible in the main window while it is off. Choosing **Allow for this task** during a reviewed run enables direct control until that run ends. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
+Every submitted task plans, acts, observes, and continues until it reaches the configured **Max Actions** (at most 100 executed mouse/keyboard actions) or **Time Limit** (20 minutes by default). Planning, completion checks and corrections don't count as actions; they are capped separately at twice the action limit plus five model calls. The final message says which limit or stop (button, emergency hotkey, time limit) ended the run. There is no separate execution-mode switch. **Review each action** is in the main toolbar and in Settings; both control one saved default for new and resumed runs (on by default). Turning it off enables direct control for every run until it is turned back on; a warning stays visible in the main window while it is off. Choosing **Allow for this task** during a reviewed run enables direct control until that run ends. Model questions still pause for an answer. Debug mode retains a read-only **Dry run** preview; it cannot execute its predicted action or change the task checkpoint.
 
 Enable **Precision clicks** in the task toolbar to check each click in a magnified crop before submitting input. It is off by default because it adds a second model call to every click; turn it on if clicks miss small targets. The crop comes from the same native screenshot as the initial prediction, and targets are identified using the goal, milestone and expected result. Only the corrected click is executed. The crop is not overlaid with a reticle that could distract the model. This helps with small icons but cannot guarantee model accuracy.
 
@@ -39,7 +39,9 @@ Enable **Precision clicks** in the task toolbar to check each click in a magnifi
 - The model adds up to three flat fields to its next action in the same inference request: `screen`, `last_action` and `step_done`. The controller turns them into milestone and input-outcome records. An input stays unverified until a later screenshot is reviewed; if the model does not say whether it worked, it is recorded as uncertain rather than blocking the next action.
 - Durable memory keeps failed approaches (failed actions, controller interruptions, and blocks), each with its evidence and source step. The three most recent are shown to the model. New tasks clear this memory; Continue and saved checkpoints retain it.
 - Memory is bounded to 16 notes / 8,000 text-and-evidence characters, eight input receipts, and five plan revisions. Whole notes are compacted, oldest first. The task prompt is capped at 32,000 JavaScript string characters, preserving the original goal, plan, current request, and latest receipt. At most six recent conversation turns / 24,000 characters are supplied separately. Only the current screenshot is sent.
-- Two reported failures on the same milestone, or three identical consecutive action/screenshot pairs, trigger one plan revision before further input. A revision lists only the remaining work, with a reason; finished milestones are kept automatically. Continued lack of progress pauses the run. Turn/time limits still apply.
+- After each action the controller waits the Action Delay, then until the screen stops changing (up to the Screen Settle Timeout), and measures how much of the screen changed since the previous capture. If almost nothing changed, the model is told so when it reviews its last action.
+- Two reported failures on the same milestone, or the same action proposed three times in a row while the screen stays visibly unchanged, trigger one plan revision before further input. A blinking caret or the taskbar clock does not count as a change. A revision lists only the remaining work, with a reason; finished milestones are kept automatically. Continued lack of progress pauses the run. Action/time limits still apply.
+- A proposal the controller rejects before sending any input (an unknown key, typing with no application focused, a click on this controller) goes back to the model with the reason, so it can choose a different action. After two such corrections in a row, the next rejection pauses the run.
 - When a window, focus, or display change invalidates a proposed action, the agent waits briefly, takes a new screenshot, and chooses a new action automatically. It can recover from Task View or a window switch without losing its goal or task permission. Possible partial input is reviewed before further input; stale coordinates are never replayed. Recovery allows three consecutive retries and six total per run before pausing. **Allow once** still applies only to its original proposal.
 - A `done` claim completes the remaining milestones unless the last action failed, but never finishes the task by itself: completion requires a second `done` decision against a new screen, with no unreviewed input. This is model judgment, not independent proof of success.
 - The expandable task panel shows milestone statuses, success conditions, evidence, durable notes, and recent input results. Legacy text-only plans load as pending milestones; old execution summaries are treated as unverified history.
@@ -54,19 +56,21 @@ Rust validates action names, argument shapes, coordinates, text lengths, key com
 
 Screenshots and task text go to the configured model server. A loopback endpoint keeps that traffic on this machine; a LAN or remote endpoint sends it elsewhere. HTTP redirects are disabled. Choose an endpoint you trust. Local IndexedDB history is unencrypted. Screenshot persistence defaults off for new settings; existing saved preferences are retained. Exports may contain sensitive text and optional images. Debug logs contain operational metadata, not prompts or typed text.
 
-Click the intended target before typing or pressing keys. If it changes or becomes obscured during approval, resume from a fresh screen. Protected input execution currently supports Windows only.
+Click the intended target before typing or pressing keys. If it changes or becomes obscured during approval, resume from a fresh screen. The shell shortcuts `win`, `win+d`, `win+e`, `win+r` and `win+s` need no target window, since Windows handles them whatever has focus; they still need approval when actions are reviewed. Protected input execution currently supports Windows only.
 
 ## Settings
 
 | Setting | Purpose |
 | --- | --- |
 | API endpoint / model ID | Local or explicitly chosen remote vision server |
-| System prompt | Editable instructions; mandatory execution rules are appended |
+| Additional instructions | Optional text added to the built-in prompt (for example "Prefer keyboard shortcuts"). The built-in prompt, action format and rules come with the app, so they stay current. A system prompt saved by an older version is dropped if it was the default, or kept here if you wrote it |
+| Max output tokens | Limit per model reply, thinking included (default 8192). A reply cut off at the limit is rejected with a message saying so |
 | Plan Before Acting | Generate milestones before a new multi-turn task |
 | Thinking mode | On by default, shown expanded. Reasoning is displayed separately and never executed or replayed |
 | Screenshot Max Dimension | Longest side of the image sent to the model (256–3840 pixels). Default and recommended: 1920 (1080p) |
 | Precision clicks / box mode | Off by default. Check a magnified crop of the same observation; inconclusive refinement stops execution |
-| Action Delay / Max Turns | Allow UI changes and bound the loop |
+| Action Delay / Screen Settle Timeout | Minimum wait after each action, then wait up to this long (default 2.5 s, 0 = off) for the screen to stop changing before the next screenshot |
+| Max Actions / Time Limit | Bound each run by executed actions (1–100) and minutes (1–240) |
 | Save Screenshots in Sessions | Include images in saved/exported history; off by default |
 
 New defaults apply to fresh installs and to **Reset to Defaults** in Settings; previously saved settings keep their values.
@@ -83,7 +87,7 @@ What 4K changes is detail. With Windows scaling at 150–200% (typical for 4K), 
 
 ## Model protocol
 
-The client requests schema-constrained JSON through `response_format: {"type":"json_schema", ...}`. The API decoder schema and prompt tool definition share `src/agent/computer-tool.json`. The final answer must contain exactly one computer action:
+The client requests schema-constrained JSON through `response_format: {"type":"json_schema", ...}`. The API decoder schema and prompt tool definition share `src/agent/computer-tool.json`. The prompt shows that flat definition. The decoder schema is built from it with one variant per action, in which the fields that action needs are required. This matters because grammar-constrained servers such as llama.cpp write required fields first, then optional ones in schema order, and cannot go back to a field they skipped. With every field optional, a model that began a plan with its `reason` could never add the `steps` it needs. The final answer must contain exactly one computer action:
 
 ```json
 {"name":"computer","arguments":{"action":"left_click","coordinate":[500,400]}}
