@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
 import { THEMES, osTheme } from '../theme';
+import { LOCAL_PROVIDER, isHosted } from '../agent/providers';
 
 export const MAX_EXTRA_INSTRUCTIONS = 8000;
 
 export const DEFAULT_SETTINGS: Settings = {
-  apiEndpoint: 'http://localhost:8889/v1',
+  apiEndpoint: LOCAL_PROVIDER.endpoint,
   modelId: 'Qwen/Qwen3-VL-30B-A3B-Instruct',
   extraInstructions: '', // Added to the built-in prompt (src/agent/protocol.ts)
   actionDelayMs: 1000, // Delay after action before next screenshot (ms)
@@ -33,9 +34,17 @@ const STORAGE_KEY = 'ai-computer-use-settings';
  * Which model to use given what the server lists (loaded models first).
  * Keeps the configured ID when the server serves it; otherwise returns the
  * first available one. Returns null when nothing should change.
+ *
+ * A hosted provider lists hundreds of models at very different prices, so
+ * the app never chooses one there: the user picks it.
  */
-export function pickModel(current: string, available: string[]): string | null {
+export function pickModel(
+  current: string,
+  available: string[],
+  endpoint = '',
+): string | null {
   if (!available.length || available.includes(current)) return null;
+  if (isHosted(endpoint)) return null;
   return available[0];
 }
 

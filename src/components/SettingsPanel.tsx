@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server, RefreshCw, FileText } from 'lucide-react';
+import { Settings as SettingsIcon, X, RotateCcw, Check, Loader2, Server, RefreshCw, FileText, KeyRound, ShieldCheck } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Settings } from '../types';
-import { MAX_EXTRA_INSTRUCTIONS, pickModel } from '../hooks/useSettings';
+import { DEFAULT_SETTINGS, MAX_EXTRA_INSTRUCTIONS, pickModel } from '../hooks/useSettings';
+import { PROVIDERS, endpointOrigin, isLoopback, providerFor } from '../agent/providers';
+
+// Above this many models a plain dropdown is unusable; use a filterable field.
+const MODEL_DROPDOWN_LIMIT = 25;
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -29,6 +33,17 @@ export function SettingsPanel({
   // Monotonic id per fetch so a slow response for an old endpoint can't
   // overwrite the results of a newer request.
   const fetchSeqRef = useRef(0);
+  // The key itself is write-only: this window can save or remove it, and ask
+  // whether one is saved, but never read it back.
+  const [hasKey, setHasKey] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const keySeqRef = useRef(0);
+
+  const provider = providerFor(settings.apiEndpoint);
+  const origin = endpointOrigin(settings.apiEndpoint);
+  const hosted = provider.id !== 'local';
 
   const handleTestConnection = async () => {
     setIsTesting(true);
@@ -51,7 +66,7 @@ export function SettingsPanel({
       setAvailableModels(models);
       // Default to a model the server actually serves (loaded ones are listed
       // first). A listed choice is kept; an unreachable server changes nothing.
-      const model = pickModel(settings.modelId, models);
+      const model = pickModel(settings.modelId, models, settings.apiEndpoint);
       if (model) onUpdateSettings({ modelId: model });
     } catch (err) {
       if (seq !== fetchSeqRef.current) return; // Stale response — ignore
@@ -65,10 +80,81 @@ export function SettingsPanel({
     }
   };
 
-  // Fetch models when the panel opens or the endpoint changes. Debounced so
-  // typing in the endpoint field doesn't fire a request per keystroke.
+  const refreshKeyStatus = async () => {
+    const seq = ++keySeqRef.current;
+    try {
+      const saved = await invoke<boolean>('api_key_status', {
+        apiEndpoint: settings.apiEndpoint,
+      });
+      if (seq === keySeqRef.current) setHasKey(saved === true);
+    } catch {
+      if (seq === keySeqRef.current) setHasKey(false);
+    }
+  };
+
+  // After the key changes: update the model list and the connection light.
+  const keyChanged = async (saved: boolean) => {
+    keySeqRef.current++;
+    setHasKey(saved);
+    setKeyDraft('');
+    await Promise.all([fetchModels(), onTestConnection()]);
+  };
+
+  const saveKey = async () => {
+    if (!keyDraft.trim() || keyBusy) return;
+    setKeyBusy(true);
+    setKeyError(null);
+    try {
+      await invoke('save_api_key', {
+        apiEndpoint: settings.apiEndpoint,
+        apiKey: keyDraft,
+      });
+      await keyChanged(true);
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  const removeKey = async () => {
+    if (keyBusy) return;
+    setKeyBusy(true);
+    setKeyError(null);
+    try {
+      await invoke('delete_api_key', { apiEndpoint: settings.apiEndpoint });
+      await keyChanged(false);
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  const chooseProvider = (id: string) => {
+    const next = PROVIDERS.find((p) => p.id === id);
+    if (!next || next.id === provider.id) return;
+    setAvailableModels([]);
+    onUpdateSettings({
+      apiEndpoint: next.endpoint,
+      // Hosted models differ in price; the user picks unless the preset
+      // names one.
+      modelId:
+        next.id === 'local' ? DEFAULT_SETTINGS.modelId : (next.defaultModel ?? ''),
+    });
+  };
+
+  // Fetch models and the key status when the panel opens or the endpoint
+  // changes. Debounced so typing in the endpoint field doesn't fire a
+  // request per keystroke. A half-typed key never carries over to another
+  // server.
   useEffect(() => {
+    setKeyDraft('');
+    setKeyError(null);
+    setHasKey(false);
     if (!isOpen || !settings.apiEndpoint) return;
+    // A local lookup, so no need to wait for typing to pause.
+    refreshKeyStatus();
     const timer = setTimeout(fetchModels, 400);
     return () => clearTimeout(timer);
   }, [isOpen, settings.apiEndpoint]);
@@ -96,14 +182,40 @@ export function SettingsPanel({
 
         {/* Content */}
         <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+          {/* Provider */}
+          <div className="space-y-2">
+            <label
+              htmlFor="provider"
+              className="block text-sm font-medium text-ink-300"
+            >
+              Provider
+            </label>
+            <select
+              id="provider"
+              value={provider.id}
+              onChange={(e) => chooseProvider(e.target.value)}
+              className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* API Endpoint */}
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-ink-300">
+            <label
+              htmlFor="api-endpoint"
+              className="block text-sm font-medium text-ink-300"
+            >
               API Endpoint
             </label>
             <div className="relative">
               <Server className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-ink-500" />
               <input
+                id="api-endpoint"
                 type="text"
                 value={settings.apiEndpoint}
                 onChange={(e) => onUpdateSettings({ apiEndpoint: e.target.value })}
@@ -111,8 +223,87 @@ export function SettingsPanel({
                 placeholder="http://localhost:8000/v1"
               />
             </div>
+            {isLoopback(settings.apiEndpoint) ? (
+              <p className="text-xs text-ink-500">
+                OpenAI-compatible API endpoint for your vision-language model.
+                Screenshots stay on this computer.
+              </p>
+            ) : (
+              <p className="text-xs text-warning">
+                Screenshots of your screen and your task text are sent to{' '}
+                {hosted ? provider.name : (origin ?? 'this server')}.
+              </p>
+            )}
+          </div>
+
+          {/* API key */}
+          <div className="space-y-2">
+            <label
+              htmlFor="api-key"
+              className="block text-sm font-medium text-ink-300"
+            >
+              API Key
+            </label>
+            {hasKey && (
+              <div className="flex items-center justify-between gap-3 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg">
+                <div className="flex items-center gap-2 min-w-0 text-sm text-ink-200">
+                  <ShieldCheck className="w-4 h-4 text-success flex-shrink-0" />
+                  <span className="truncate">
+                    Key saved for {origin ?? 'this endpoint'}
+                  </span>
+                </div>
+                <button
+                  onClick={removeKey}
+                  disabled={keyBusy}
+                  className="text-xs text-danger hover:underline disabled:opacity-50 flex-shrink-0"
+                >
+                  Remove
+                </button>
+              </div>
+            )}
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveKey();
+              }}
+            >
+              <div className="relative flex-1">
+                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-ink-500" />
+                <input
+                  id="api-key"
+                  type="password"
+                  value={keyDraft}
+                  onChange={(e) => setKeyDraft(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  maxLength={512}
+                  className="w-full pl-11 pr-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 placeholder-ink-500 focus:border-primary-500 transition-colors"
+                  placeholder={
+                    hasKey
+                      ? 'Paste a new key to replace it'
+                      : hosted
+                        ? 'Paste your API key'
+                        : 'Optional'
+                  }
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={!keyDraft.trim() || keyBusy || !origin}
+                className="px-4 py-3 rounded-lg bg-ink-700 text-ink-200 border border-ink-600 hover:bg-ink-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {keyBusy ? 'Saving...' : 'Save Key'}
+              </button>
+            </form>
+            {keyError && <p className="text-xs text-danger">{keyError}</p>}
             <p className="text-xs text-ink-500">
-              OpenAI-compatible API endpoint for your vision-language model
+              {hosted
+                ? `Required. Create one at ${provider.keysPage}.`
+                : 'Only needed if your server asks for one (for example llama.cpp or vLLM started with --api-key).'}{' '}
+              Kept in Windows Credential Manager, not in settings, sessions or
+              exports. It is sent only to {origin ?? 'this endpoint'} and cannot
+              be shown again here.
             </p>
           </div>
 
@@ -131,16 +322,40 @@ export function SettingsPanel({
                 Refresh
               </button>
             </div>
-            {availableModels.length > 0 ? (
+            {availableModels.length > MODEL_DROPDOWN_LIMIT ? (
+              <>
+                <input
+                  type="text"
+                  aria-label="Model"
+                  list="available-models"
+                  value={settings.modelId}
+                  onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
+                  className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 placeholder-ink-500 focus:border-primary-500 transition-colors"
+                  placeholder={`Type to search ${availableModels.length} models`}
+                />
+                <datalist id="available-models">
+                  {availableModels.map((model) => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+              </>
+            ) : availableModels.length > 0 ? (
               <select
+                aria-label="Model"
                 value={settings.modelId}
                 onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
                 className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
               >
-                {!availableModels.includes(settings.modelId) && (
-                  <option value={settings.modelId}>
-                    {settings.modelId} (current, not in server list)
+                {!settings.modelId ? (
+                  <option value="" disabled>
+                    Select a model
                   </option>
+                ) : (
+                  !availableModels.includes(settings.modelId) && (
+                    <option value={settings.modelId}>
+                      {settings.modelId} (current, not in server list)
+                    </option>
+                  )
                 )}
                 {availableModels.map((model) => (
                   <option key={model} value={model}>
@@ -151,11 +366,17 @@ export function SettingsPanel({
             ) : (
               <input
                 type="text"
+                aria-label="Model"
                 value={settings.modelId}
                 onChange={(e) => onUpdateSettings({ modelId: e.target.value })}
                 className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 placeholder-ink-500 focus:border-primary-500 transition-colors"
-                placeholder="Qwen/Qwen3-VL-30B-A3B-Instruct"
+                placeholder={hosted ? 'Model ID' : 'Qwen/Qwen3-VL-30B-A3B-Instruct'}
               />
+            )}
+            {hosted && !settings.modelId && (
+              <p className="text-xs text-warning">
+                Choose a vision-capable model before starting a task.
+              </p>
             )}
             {modelFetchError && (
               <p className="text-xs text-danger">
@@ -322,7 +543,7 @@ export function SettingsPanel({
                 Thinking Mode
               </label>
               <p className="text-xs text-ink-500">
-                Enable reasoning/thinking for models that support it (Qwen3, Gemma, DeepSeek-R1, etc.)
+                Enable reasoning/thinking for models that support it (Qwen3, Gemma, DeepSeek-R1, Claude). OpenRouter, OpenAI and Gemini use each model's own default.
               </p>
             </div>
             <button

@@ -93,10 +93,13 @@ function App() {
   // A run already in progress keeps the settings it started with.
   const syncModel = async () => {
     try {
+      const { apiEndpoint, modelId } = settingsRef.current;
       const models = await invoke<string[]>('fetch_available_models', {
-        apiEndpoint: settingsRef.current.apiEndpoint,
+        apiEndpoint,
       });
-      const model = pickModel(settingsRef.current.modelId, models);
+      // A reply for an endpoint the user has since changed is ignored.
+      if (apiEndpoint !== settingsRef.current.apiEndpoint) return;
+      const model = pickModel(modelId, models, apiEndpoint);
       if (model) updateSettings({ modelId: model });
     } catch {
       // Unreachable or no model list: the connection status already shows it.

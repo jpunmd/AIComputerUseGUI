@@ -13,6 +13,10 @@ pub struct ModelConfig {
     pub enable_thinking: bool,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// Filled in by Rust from the credential store for this endpoint's
+    /// origin. Never accepted from the webview.
+    #[serde(skip)]
+    pub api_key: Option<crate::secrets::ApiKey>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -211,6 +215,9 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// OpenAI's name for the same limit; set instead of max_tokens there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_template_kwargs: Option<ChatTemplateKwargs>,
 }
@@ -237,6 +244,9 @@ pub struct ChatMessageResponse {
     /// Reasoning/thinking content from thinking models (e.g. Qwen3, DeepSeek-R1)
     #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// OpenRouter's name for the same display-only reasoning text.
+    #[serde(default, skip_serializing)]
+    pub reasoning: Option<serde_json::Value>,
     #[serde(default)]
     pub tool_calls: Vec<NativeToolCall>,
 }

@@ -93,7 +93,11 @@ describe('model picker', () => {
   });
 
   it('switches the settings to a model the server serves', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(['Qwen3-VL-8B-Instruct-Q4_K_M.gguf']);
+    vi.mocked(invoke).mockImplementation(async (command: string) =>
+      command === 'fetch_available_models'
+        ? ['Qwen3-VL-8B-Instruct-Q4_K_M.gguf']
+        : false,
+    );
     const onUpdateSettings = vi.fn();
     render(
       <SettingsPanel

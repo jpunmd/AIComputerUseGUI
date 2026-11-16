@@ -1,6 +1,6 @@
 # AI Computer Use Agent
 
-A Windows Tauri application that lets a local vision-language model propose and execute mouse and keyboard actions. It connects to an OpenAI-compatible `/v1/chat/completions` server. Use a model that accepts images and follows the computer-action format in Settings; text-only models cannot ground clicks from screenshots.
+A Windows Tauri application that lets a vision-language model propose and execute mouse and keyboard actions. It connects to a local OpenAI-compatible `/v1/chat/completions` server, or to OpenRouter, OpenAI, Anthropic (Claude) or Google (Gemini) with an API key. Use a model that accepts images and follows the computer-action format in Settings; text-only models cannot ground clicks from screenshots.
 
 ## Recommended models
 
@@ -10,6 +10,29 @@ A Windows Tauri application that lets a local vision-language model propose and 
 | **Qwen 3.8 Flash-Next** | Faster option for the same workflow |
 
 Use a vision-capable build (with llama.cpp this means loading the model's multimodal projector) behind an OpenAI-compatible `/v1` endpoint. The app reads the server's `/v1/models` list and uses a model it serves (a loaded one first), so you normally don't need to type a model ID. The tool call is deliberately flat (no nested objects; a plan is a list of strings) because local models follow that far more reliably than nested bookkeeping. Thinking mode is on by default and its reasoning is shown expanded.
+
+## Providers and API keys
+
+Choose a provider in Settings. A preset only fills in the endpoint; any other OpenAI-compatible URL works as a custom server.
+
+| Provider | Endpoint | Notes |
+| --- | --- | --- |
+| Local or custom server | `http://localhost:8889/v1` (editable) | A key is optional, for servers started with one (llama.cpp or vLLM `--api-key`, LM Studio, a reverse proxy) |
+| OpenRouter | `https://openrouter.ai/api/v1` | Key required |
+| OpenAI | `https://api.openai.com/v1` | Key required. Sends `max_completion_tokens` |
+| Anthropic (Claude) | `https://api.anthropic.com/v1` | Key required. Uses the native Messages API with structured output |
+| Google (Gemini) | `https://generativelanguage.googleapis.com/v1beta/openai` | Key required. Uses Gemini's OpenAI-compatible endpoint |
+
+How keys are handled:
+
+- A key is saved in **Windows Credential Manager** for your Windows account. It is never written to settings, saved sessions, exports or logs.
+- The key is write-only from the app window. Settings can save, replace or remove a key and show whether one is saved, but nothing can read it back. Requests are signed in the Rust process.
+- Each key is bound to the scheme, host and port it was saved for and is sent nowhere else. Changing the endpoint to another server sends no key until you save one for that server.
+- A key is sent only over HTTPS, or over HTTP to this computer or a private network address (`10.x`, `172.16-31.x`, `192.168.x`, link-local). Redirects are never followed, so a key cannot be forwarded to another host.
+- If a server echoes the key in an error message, it is replaced with `[API key]` before the message is shown or saved.
+- To remove a key, use **Remove** in Settings, or delete the `AI Computer Use API key:<origin>` entry under Windows Credentials. **Reset to Defaults** does not delete saved keys.
+
+With a hosted provider the app never chooses a model for you, because prices differ widely: pick a vision-capable model from the list (the Anthropic preset suggests `claude-opus-5-5`). A hosted provider receives a screenshot of your screen on every step, and you pay that provider for each request. If a provider rejects the response schema, the app retries once without it and validates the reply locally as usual. The Thinking Mode switch applies to local servers and Claude; OpenRouter, OpenAI and Gemini models use their own default.
 
 ## Getting started
 
@@ -54,7 +77,7 @@ This sends real input to the host desktop. Test in a disposable Windows account 
 
 Rust validates action names, argument shapes, coordinates, text lengths, key combinations, and scroll limits. Proposals are bound to the current run and observation. Approvals are single-use; stale/replaced runs and this controller's window are rejected. Monitor geometry and target window identity/position are checked before input. These checks do not detect every content change inside an unchanged window.
 
-Screenshots and task text go to the configured model server. A loopback endpoint keeps that traffic on this machine; a LAN or remote endpoint sends it elsewhere. HTTP redirects are disabled. Choose an endpoint you trust. Local IndexedDB history is unencrypted. Screenshot persistence defaults off for new settings; existing saved preferences are retained. Exports may contain sensitive text and optional images. Debug logs contain operational metadata, not prompts or typed text.
+Screenshots and task text go to the configured model server. A loopback endpoint keeps that traffic on this machine; a LAN, remote or hosted-provider endpoint sends it elsewhere, and Settings says so under the endpoint. HTTP redirects are disabled. Choose an endpoint you trust. API keys are kept in Windows Credential Manager and sent only to the server they were saved for (see [Providers and API keys](#providers-and-api-keys)). Local IndexedDB history is unencrypted. Screenshot persistence defaults off for new settings; existing saved preferences are retained. Exports may contain sensitive text and optional images. Debug logs contain operational metadata, not prompts or typed text.
 
 Click the intended target before typing or pressing keys. If it changes or becomes obscured during approval, resume from a fresh screen. The shell shortcuts `win`, `win+d`, `win+e`, `win+r` and `win+s` need no target window, since Windows handles them whatever has focus; they still need approval when actions are reviewed. Protected input execution currently supports Windows only.
 
@@ -62,7 +85,8 @@ Click the intended target before typing or pressing keys. If it changes or becom
 
 | Setting | Purpose |
 | --- | --- |
-| API endpoint / model ID | Local or explicitly chosen remote vision server |
+| Provider / API endpoint / model ID | Local server, hosted provider preset, or any OpenAI-compatible URL |
+| API key | Optional for local servers, required for hosted providers. Stored in Windows Credential Manager, bound to the endpoint's origin |
 | Additional instructions | Optional text added to the built-in prompt (for example "Prefer keyboard shortcuts"). The built-in prompt, action format and rules come with the app, so they stay current. A system prompt saved by an older version is dropped if it was the default, or kept here if you wrote it |
 | Max output tokens | Limit per model reply, thinking included (default 8192). A reply cut off at the limit is rejected with a message saying so |
 | Plan Before Acting | Generate milestones before a new multi-turn task |

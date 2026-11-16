@@ -14,6 +14,9 @@
     "allow-execute-action",
     "allow-test-api-connection",
     "allow-fetch-available-models",
+    "allow-api-key-status",
+    "allow-save-api-key",
+    "allow-delete-api-key",
     "allow-get-screen-size",
     "allow-export-sessions"
   ]

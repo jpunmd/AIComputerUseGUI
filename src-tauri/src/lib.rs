@@ -2,8 +2,10 @@ mod actions;
 mod api;
 mod control_error;
 mod protocol;
+mod providers;
 mod run_control;
 mod screenshot;
+mod secrets;
 mod types;
 mod validation;
 mod window_guard;
@@ -108,6 +110,7 @@ async fn process_computer_use(
     state: Control<'_>,
 ) -> Result<AgentResponse, String> {
     let token = state.token(&run_id)?;
+    let model = with_saved_key(model)?;
     let image = api::ModelImage {
         base64: &screenshot_base64,
         width: display_width,
@@ -143,6 +146,7 @@ async fn refine_coordinate(
 ) -> Result<api::RefineResult, String> {
     let token = state.token(&run_id)?;
     let observation = state.observation(&run_id, &observation_id)?;
+    let model = with_saved_key(model)?;
     api::refine_coordinate(
         &observation.native_image,
         &model,
@@ -270,15 +274,40 @@ async fn execute_action(
 
 #[tauri::command]
 async fn test_api_connection(api_endpoint: String) -> Result<bool, String> {
-    api::test_connection(&api_endpoint)
+    let key = secrets::load(&api_endpoint)?;
+    api::test_connection(&api_endpoint, key.as_ref())
         .await
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn fetch_available_models(api_endpoint: String) -> Result<Vec<String>, String> {
-    api::fetch_models(&api_endpoint)
+    let key = secrets::load(&api_endpoint)?;
+    api::fetch_models(&api_endpoint, key.as_ref())
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Attach the key saved for this endpoint's origin, if any. The key goes
+/// from the credential store to the request without passing through the
+/// webview.
+fn with_saved_key(mut model: ModelConfig) -> Result<ModelConfig, String> {
+    model.api_key = secrets::load(&model.api_endpoint)?;
+    Ok(model)
+}
+
+/// Whether a key is saved for this endpoint. There is deliberately no
+/// command that returns the key itself.
+#[tauri::command]
+fn api_key_status(api_endpoint: String) -> Result<bool, String> {
+    Ok(secrets::load(&api_endpoint)?.is_some())
+}
+#[tauri::command]
+fn save_api_key(api_endpoint: String, api_key: String) -> Result<(), String> {
+    secrets::save(&api_endpoint, &api_key)
+}
+#[tauri::command]
+fn delete_api_key(api_endpoint: String) -> Result<(), String> {
+    secrets::remove(&api_endpoint)
 }
 /// Saves exported sessions to a file the user picks in a native Save dialog.
 /// The webview can't download files itself, and this keeps file-system access
@@ -350,6 +379,9 @@ pub fn run() {
             execute_action,
             test_api_connection,
             fetch_available_models,
+            api_key_status,
+            save_api_key,
+            delete_api_key,
             export_sessions
         ])
         .run(tauri::generate_context!())

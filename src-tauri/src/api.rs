@@ -1,4 +1,4 @@
-use crate::types::*;
+use crate::{providers::Provider, secrets::ApiKey, types::*};
 use reqwest::Client;
 use serde::Deserialize;
 use std::{sync::LazyLock, time::Duration};
@@ -42,12 +42,37 @@ fn endpoint(base: &str, path: &str) -> Result<reqwest::Url, ApiError> {
             "Use an HTTP(S) API base URL without credentials, query, or fragment".into(),
         ));
     }
-    url.set_path(&format!("{}/{}", url.path().trim_end_matches('/'), path));
+    if !path.is_empty() {
+        url.set_path(&format!("{}/{}", url.path().trim_end_matches('/'), path));
+    }
     Ok(url)
+}
+
+/// Never show a key back to the user or the model, even if a server echoes
+/// it in an error message.
+fn redact(text: &str, key: Option<&ApiKey>) -> String {
+    match key {
+        Some(key) => text.replace(key.expose(), "[API key]"),
+        None => text.into(),
+    }
+}
+
+/// Build a request for `url`, attaching the key only when the transport is
+/// safe for it. The key always belongs to this URL's origin (see `secrets`).
+fn authorized(
+    request: reqwest::RequestBuilder,
+    url: &reqwest::Url,
+    key: Option<&ApiKey>,
+) -> Result<reqwest::RequestBuilder, ApiError> {
+    if key.is_some() {
+        crate::secrets::require_safe_transport(url).map_err(ApiError::ApiResponseError)?;
+    }
+    Ok(Provider::of(url).authorize(request, key))
 }
 
 async fn decode_response<T: serde::de::DeserializeOwned>(
     mut response: reqwest::Response,
+    key: Option<&ApiKey>,
 ) -> Result<T, ApiError> {
     let status = response.status();
     if response
@@ -68,10 +93,15 @@ async fn decode_response<T: serde::de::DeserializeOwned>(
         body.extend_from_slice(&chunk);
     }
     if !status.is_success() {
+        let hint = match status.as_u16() {
+            401 | 403 if key.is_none() => " (this server needs an API key; add one in Settings)",
+            401 | 403 => " (the server rejected the saved API key; check it in Settings)",
+            _ => "",
+        };
         return Err(ApiError::ApiResponseError(format!(
-            "HTTP {}: {}",
+            "HTTP {}{hint}: {}",
             status.as_u16(),
-            String::from_utf8_lossy(&body[..body.len().min(2048)])
+            redact(&String::from_utf8_lossy(&body[..body.len().min(2048)]), key)
         )));
     }
     serde_json::from_slice(&body).map_err(|e| ApiError::ParseError(e.to_string()))
@@ -89,15 +119,26 @@ pub enum ApiError {
     Cancelled,
 }
 
-fn unsupported_response_format(error: &ApiError) -> bool {
+fn rejected_request(error: &ApiError) -> Option<String> {
     let ApiError::ApiResponseError(detail) = error else {
-        return false;
+        return None;
     };
     let detail = detail.to_ascii_lowercase();
+    (detail.starts_with("http 400") || detail.starts_with("http 422")).then_some(detail)
+}
+
+fn unsupported_response_format(error: &ApiError, provider: Provider) -> bool {
+    let Some(detail) = rejected_request(error) else {
+        return false;
+    };
+    // Hosted APIs each word a schema they can't use differently. One retry
+    // without it costs little, and an unrelated fault fails again as itself.
+    if provider.is_hosted() {
+        return true;
+    }
     // Never downgrade on a malformed schema, auth/rate-limit/server error or
     // invalid model output. Only an explicit unsupported-parameter response.
-    (detail.starts_with("http 400:") || detail.starts_with("http 422:"))
-        && (detail.contains("response_format") || detail.contains("json_schema"))
+    (detail.contains("response_format") || detail.contains("json_schema"))
         && [
             "not supported",
             "unsupported",
@@ -111,25 +152,37 @@ fn unsupported_response_format(error: &ApiError) -> bool {
         && !detail.contains("schema keyword")
 }
 
+/// Claude models that predate adaptive thinking reject the field.
+fn unsupported_thinking(error: &ApiError) -> bool {
+    rejected_request(error).is_some_and(|detail| detail.contains("thinking"))
+}
+
 async fn request_completion(
-    endpoint: reqwest::Url,
+    model: &ModelConfig,
     mut request: ChatRequest,
     original_prompt: &str,
     cancel: &CancellationToken,
 ) -> Result<(ChatResponse, Option<String>), ApiError> {
+    let provider = Provider::of(&endpoint(&model.api_endpoint, "")?);
+    let endpoint = endpoint(&model.api_endpoint, provider.completion_path())?;
+    let key = model.api_key.as_ref();
+    provider.shape(&mut request);
+    let mut thinking = model.enable_thinking;
     let mut warning = None;
+    // Each optional feature can be dropped once, so this ends within three
+    // requests.
     loop {
         if cancel.is_cancelled() {
             return Err(ApiError::Cancelled);
         }
         let pending = async {
-            let response = CLIENT
-                .post(endpoint.clone())
+            let response = authorized(CLIENT.post(endpoint.clone()), &endpoint, key)?
                 .timeout(COMPLETION_TIMEOUT)
-                .json(&request)
+                .json(&provider.body(&request, thinking))
                 .send()
                 .await?;
-            decode_response::<ChatResponse>(response).await
+            let body = decode_response::<serde_json::Value>(response, key).await?;
+            provider.response(body).map_err(ApiError::ParseError)
         };
         let result = tokio::select! {
             result = pending => result,
@@ -138,7 +191,13 @@ async fn request_completion(
         match result {
             Ok(response) => return Ok((response, warning)),
             Err(error)
-                if request.response_format.is_some() && unsupported_response_format(&error) =>
+                if thinking && provider == Provider::Anthropic && unsupported_thinking(&error) =>
+            {
+                thinking = false;
+            }
+            Err(error)
+                if request.response_format.is_some()
+                    && unsupported_response_format(&error, provider) =>
             {
                 request.response_format = None;
                 request.messages[0].content = vec![ContentPart::Text {
@@ -163,6 +222,11 @@ pub async fn call_computer_use_api(
 ) -> Result<AgentResponse, ApiError> {
     if cancel.is_cancelled() {
         return Err(ApiError::Cancelled);
+    }
+    if model.model_id.trim().is_empty() {
+        return Err(ApiError::ApiResponseError(
+            "No model selected. Choose one in Settings.".into(),
+        ));
     }
     let (display_width, display_height) = (image.width, image.height);
     if image.base64.len() > 32 * 1024 * 1024
@@ -254,6 +318,7 @@ pub async fn call_computer_use_api(
         model: model.model_id.clone(),
         messages,
         max_tokens: Some(model.max_tokens()),
+        max_completion_tokens: None,
         chat_template_kwargs: Some(ChatTemplateKwargs {
             enable_thinking: Some(model.enable_thinking),
         }),
@@ -261,9 +326,8 @@ pub async fn call_computer_use_api(
 
     // Make the API request. Racing against the cancel signal lets a Stop press
     // drop the request mid-generation instead of waiting out the inference.
-    let endpoint = endpoint(&model.api_endpoint, "chat/completions")?;
     let (chat_response, format_warning) =
-        request_completion(endpoint, request, system_prompt, cancel).await?;
+        request_completion(model, request, system_prompt, cancel).await?;
 
     // Parse the response
     let raw_output_text = chat_response
@@ -288,7 +352,15 @@ pub async fn call_computer_use_api(
     let reasoning_content = chat_response
         .choices
         .first()
-        .and_then(|c| c.message.reasoning_content.clone())
+        .and_then(|c| {
+            c.message.reasoning_content.clone().or_else(|| {
+                c.message
+                    .reasoning
+                    .as_ref()
+                    .and_then(|r| r.as_str())
+                    .map(str::to_owned)
+            })
+        })
         .filter(|s| !s.trim().is_empty());
 
     let choice = chat_response
@@ -585,10 +657,14 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
     (rest.trim().to_string(), thinking)
 }
 
-/// Test the API connection
-pub async fn test_connection(api_endpoint: &str) -> Result<bool, ApiError> {
-    let endpoint = endpoint(api_endpoint, "models")?;
-    let response = CLIENT.get(endpoint).timeout(MODELS_TIMEOUT).send().await?;
+/// Test the API connection, and the saved key when the server checks it.
+pub async fn test_connection(api_endpoint: &str, key: Option<&ApiKey>) -> Result<bool, ApiError> {
+    let provider = Provider::of(&endpoint(api_endpoint, "")?);
+    let endpoint = endpoint(api_endpoint, provider.check_path())?;
+    let response = authorized(CLIENT.get(endpoint.clone()), &endpoint, key)?
+        .timeout(MODELS_TIMEOUT)
+        .send()
+        .await?;
 
     Ok(response.status().is_success())
 }
@@ -618,11 +694,21 @@ impl ModelInfo {
 }
 
 /// Fetch available models from the API endpoint
-pub async fn fetch_models(api_endpoint: &str) -> Result<Vec<String>, ApiError> {
-    let endpoint = endpoint(api_endpoint, "models")?;
-    let response = CLIENT.get(endpoint).timeout(MODELS_TIMEOUT).send().await?;
+pub async fn fetch_models(
+    api_endpoint: &str,
+    key: Option<&ApiKey>,
+) -> Result<Vec<String>, ApiError> {
+    let mut endpoint = endpoint(api_endpoint, "models")?;
+    if Provider::of(&endpoint) == Provider::Anthropic {
+        // Claude's list is paginated, 20 per page by default.
+        endpoint.set_query(Some("limit=1000"));
+    }
+    let response = authorized(CLIENT.get(endpoint.clone()), &endpoint, key)?
+        .timeout(MODELS_TIMEOUT)
+        .send()
+        .await?;
 
-    let models_response: ModelsResponse = decode_response(response).await?;
+    let models_response: ModelsResponse = decode_response(response, key).await?;
     Ok(order_models(models_response.data))
 }
 
@@ -695,6 +781,7 @@ mod tests {
             model_id: "test".into(),
             enable_thinking: false,
             max_tokens: 8192,
+            api_key: None,
         }
     }
 
@@ -728,6 +815,14 @@ mod tests {
         .unwrap();
         assert!(config.enable_thinking);
         assert_eq!(config.max_tokens(), MAX_MAX_TOKENS);
+        // The webview cannot supply a key: only the credential store can.
+        for field in ["apiKey", "api_key"] {
+            let config: ModelConfig = serde_json::from_value(serde_json::json!({
+                "apiEndpoint": "x", "modelId": "m", field: "sk-from-webview"
+            }))
+            .unwrap();
+            assert!(config.api_key.is_none());
+        }
         let defaults: ModelConfig =
             serde_json::from_value(serde_json::json!({"apiEndpoint": "x", "modelId": "m"}))
                 .unwrap();
@@ -820,6 +915,103 @@ mod tests {
         }
     }
 
+    /// One-shot server that returns the raw request head it received.
+    async fn capture_request(
+        status: u16,
+        body: String,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![];
+            while !bytes.windows(4).any(|s| s == b"\r\n\r\n") {
+                let mut chunk = [0; 4096];
+                let n = stream.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+            }
+            let response = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            stream.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&bytes).to_ascii_lowercase()
+        });
+        (address, server)
+    }
+
+    #[tokio::test]
+    async fn saved_key_is_sent_as_a_bearer_token_and_only_when_present() {
+        let key = ApiKey::parse("sk-local-test-key").unwrap();
+        let (address, server) = capture_request(200, r#"{"data":[{"id":"m"}]}"#.into()).await;
+        assert_eq!(fetch_models(&address, Some(&key)).await.unwrap(), ["m"]);
+        let head = server.await.unwrap();
+        assert!(head.contains("authorization: bearer sk-local-test-key"));
+        assert!(!head.contains("x-api-key"));
+
+        let (address, server) = capture_request(200, r#"{"data":[]}"#.into()).await;
+        assert!(test_connection(&address, None).await.unwrap());
+        assert!(!server.await.unwrap().contains("authorization"));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_is_explained_and_never_echoed() {
+        let key = ApiKey::parse("sk-local-test-key").unwrap();
+        let (address, server) =
+            capture_request(401, "Incorrect API key provided: sk-local-test-key".into()).await;
+        let error = fetch_models(&address, Some(&key))
+            .await
+            .unwrap_err()
+            .to_string();
+        server.await.unwrap();
+        assert!(error.contains("rejected the saved API key"), "{error}");
+        assert!(error.contains("[API key]"));
+        assert!(!error.contains("sk-local-test-key"));
+
+        let (address, server) = capture_request(401, "Unauthorized".into()).await;
+        let error = fetch_models(&address, None).await.unwrap_err().to_string();
+        server.await.unwrap();
+        assert!(error.contains("needs an API key"), "{error}");
+    }
+
+    #[test]
+    fn a_key_is_never_attached_to_plain_http_on_a_public_host() {
+        let key = ApiKey::parse("sk-local-test-key").unwrap();
+        let public = reqwest::Url::parse("http://example.com/v1/models").unwrap();
+        let error = authorized(CLIENT.get(public.clone()), &public, Some(&key)).unwrap_err();
+        assert!(error.to_string().contains("HTTPS"));
+        // Without a key there is nothing to protect.
+        assert!(authorized(CLIENT.get(public.clone()), &public, None).is_ok());
+        let claude = reqwest::Url::parse("https://api.anthropic.com/v1/messages").unwrap();
+        let request = authorized(CLIENT.post(claude.clone()), &claude, Some(&key))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["x-api-key"], "sk-local-test-key");
+        assert!(request.headers()["x-api-key"].is_sensitive());
+        assert!(request.headers().contains_key("anthropic-version"));
+        assert!(!request.headers().contains_key("authorization"));
+        // Sensitive header values are redacted from debug output.
+        assert!(!format!("{request:?}").contains("sk-local-test-key"));
+    }
+
+    #[tokio::test]
+    async fn a_run_needs_a_model() {
+        let mut model = test_model("http://127.0.0.1:1/v1");
+        model.model_id = "  ".into();
+        let error = call_computer_use_api(
+            &model,
+            &BLANK,
+            "q",
+            "p",
+            None,
+            1000.0,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Choose one in Settings"));
+    }
+
     #[tokio::test]
     async fn unsupported_format_fallback_is_bounded() {
         let (address, server) = mock_completions(vec![
@@ -842,7 +1034,7 @@ mod tests {
         use image::{Rgba, RgbaImage};
         let endpoint =
             std::env::var("VISION_TEST_ENDPOINT").expect("Set VISION_TEST_ENDPOINT explicitly");
-        let model = fetch_models(&endpoint)
+        let model = fetch_models(&endpoint, None)
             .await
             .unwrap()
             .into_iter()
@@ -897,6 +1089,7 @@ mod tests {
             model_id: model,
             enable_thinking: true,
             max_tokens: 8192,
+            api_key: None,
         };
         for boxes in [false, true] {
             let result = refine_coordinate(&source, &model, 146.0, 900.0, "click",
@@ -1025,7 +1218,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let result = fetch_models(&address).await;
+        let result = fetch_models(&address, None).await;
         server.await.unwrap();
         assert!(result.unwrap_err().to_string().contains("2 MB limit"));
     }
