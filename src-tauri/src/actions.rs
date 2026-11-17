@@ -76,7 +76,11 @@ pub fn execute_action(
     validate_keys(action)?;
     check(cancel)?;
     if action.action == "wait" {
-        return wait(1000, cancel);
+        let seconds = action
+            .arguments
+            .seconds
+            .unwrap_or(validation::DEFAULT_WAIT_SECONDS);
+        return wait(u64::from(seconds) * 1000, cancel);
     }
     if !validation::is_mutating(action) {
         return Ok(());

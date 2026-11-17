@@ -4,7 +4,6 @@ export interface Settings {
   extraInstructions: string; // User text added to the built-in system prompt
   actionDelayMs: number; // Delay after action before next screenshot
   settleTimeoutMs: number; // Then wait up to this long for the screen to stop changing (0 = off)
-  maxTurns: number; // Maximum number of executed actions before stopping
   maxRunMinutes: number; // Wall-clock limit for one run
   screenshotMaxDimension: number; // Max width/height for screenshots sent to API
   maxTokens: number; // Output token limit per model reply (thinking included)
@@ -41,6 +40,7 @@ export interface ActionResult {
     end_coordinate?: number[];
     direction?: string;
     amount?: number;
+    seconds?: number; // wait only
     steps?: string[]; // plan only
     reason?: string; // plan only
   };

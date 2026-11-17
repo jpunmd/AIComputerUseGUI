@@ -1,6 +1,9 @@
 use crate::types::ActionResult;
 
 pub const MAX_TEXT_BYTES: usize = 8192;
+/// Longest single wait; the model can wait again while something is still loading.
+pub const MAX_WAIT_SECONDS: u32 = 60;
+pub const DEFAULT_WAIT_SECONDS: u32 = 2;
 
 pub fn validate(
     action: &ActionResult,
@@ -91,7 +94,12 @@ pub fn validate(
                 return Err("Scroll amount must be between 1 and 50".into());
             }
         }
-        "wait" | "screenshot" | "none" => {}
+        "wait" => {
+            if !(1..=MAX_WAIT_SECONDS).contains(&args.seconds.unwrap_or(DEFAULT_WAIT_SECONDS)) {
+                return Err(format!("Wait seconds must be between 1 and {MAX_WAIT_SECONDS}"));
+            }
+        }
+        "screenshot" | "none" => {}
         _ => return Err("Unsupported computer action".into()),
     }
     // Do not silently ignore contradictory arguments from malformed model output.
@@ -110,6 +118,7 @@ pub fn validate(
                 "type" | "confirm" | "done" | "none" | "plan"
             ))
         || ((args.steps.is_some() || args.reason.is_some()) && action.action != "plan")
+        || (args.seconds.is_some() && action.action != "wait")
     {
         return Err("Arguments do not match the action type".into());
     }
@@ -247,6 +256,24 @@ mod tests {
             assert!(validate(&action(value), 1000.0, false).is_err());
         }
     }
+    #[test]
+    fn wait_accepts_a_bounded_duration_only_on_wait() {
+        for ok in [
+            serde_json::json!({"action":"wait","arguments":{}}),
+            serde_json::json!({"action":"wait","arguments":{"seconds":1}}),
+            serde_json::json!({"action":"wait","arguments":{"seconds":60}}),
+        ] {
+            assert!(validate(&action(ok), 1000.0, false).is_ok());
+        }
+        for bad in [
+            serde_json::json!({"action":"wait","arguments":{"seconds":0}}),
+            serde_json::json!({"action":"wait","arguments":{"seconds":61}}),
+            serde_json::json!({"action":"key","arguments":{"key":"enter","seconds":5}}),
+        ] {
+            assert!(validate(&action(bad), 1000.0, false).is_err());
+        }
+    }
+
     #[test]
     fn pixels_include_monitor_origin_and_remain_inside_display() {
         assert_eq!(pixel(0.0, 1000.0, 1920, -1920), -1920);

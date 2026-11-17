@@ -391,7 +391,7 @@ export function SettingsPanel({
           </div>
 
           {/* Review each action (saved default for new runs) */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div className="pr-4">
               <label
                 id="review-each-action-label"
@@ -413,7 +413,7 @@ export function SettingsPanel({
               aria-checked={settings.reviewEachAction}
               aria-labelledby="review-each-action-label"
               onClick={() => onUpdateSettings({ reviewEachAction: !settings.reviewEachAction })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors flex-shrink-0 ${
                 settings.reviewEachAction ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >
@@ -498,25 +498,6 @@ export function SettingsPanel({
             </p>
           </div>
 
-          {/* Max actions */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-ink-300">
-              Max Actions
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              step={1}
-              value={settings.maxTurns}
-              onChange={(e) => onUpdateSettings({ maxTurns: Math.max(1, parseInt(e.target.value) || 20) })}
-              className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
-            />
-            <p className="text-xs text-ink-500">
-              Maximum number of mouse/keyboard actions per run. Planning, completion checks and corrections don't count, but are capped separately.
-            </p>
-          </div>
-
           {/* Time limit */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-ink-300">
@@ -532,12 +513,12 @@ export function SettingsPanel({
               className="w-full px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-ink-50 focus:border-primary-500 transition-colors"
             />
             <p className="text-xs text-ink-500">
-              A run stops after this long, even if it has actions left.
+              A run stops after this long. There is no limit on the number of actions; Stop or Ctrl+Alt+F12 ends a run at any time.
             </p>
           </div>
 
           {/* Thinking Mode */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <label className="block text-sm font-medium text-ink-300">
                 Thinking Mode
@@ -548,7 +529,7 @@ export function SettingsPanel({
             </div>
             <button
               onClick={() => onUpdateSettings({ enableThinking: !settings.enableThinking })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
                 settings.enableThinking ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >
@@ -561,7 +542,7 @@ export function SettingsPanel({
           </div>
 
           {/* Expand thinking by default */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <label className="block text-sm font-medium text-ink-300">
                 Expand Thinking by Default
@@ -573,7 +554,7 @@ export function SettingsPanel({
             <button
               onClick={() => onUpdateSettings({ expandThinkingByDefault: !settings.expandThinkingByDefault })}
               disabled={!settings.enableThinking}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
                 settings.expandThinkingByDefault ? 'bg-primary-500' : 'bg-ink-600'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
@@ -605,7 +586,7 @@ export function SettingsPanel({
           </div>
 
           {/* Task planning */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <label className="block text-sm font-medium text-ink-300">
                 Plan Before Acting
@@ -616,7 +597,7 @@ export function SettingsPanel({
             </div>
             <button
               onClick={() => onUpdateSettings({ enablePlanning: !settings.enablePlanning })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
                 settings.enablePlanning ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >
@@ -651,7 +632,7 @@ export function SettingsPanel({
           </div>
 
           {/* Save screenshots in sessions */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div className="pr-4">
               <label className="block text-sm font-medium text-ink-300">
                 Save Screenshots in Sessions
@@ -662,7 +643,7 @@ export function SettingsPanel({
             </div>
             <button
               onClick={() => onUpdateSettings({ saveScreenshotsInSessions: !settings.saveScreenshotsInSessions })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors flex-shrink-0 ${
                 settings.saveScreenshotsInSessions ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >
@@ -675,7 +656,7 @@ export function SettingsPanel({
           </div>
 
           {/* Zoom Refine (two-pass coarse-to-fine) */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div className="pr-4">
               <label className="block text-sm font-medium text-ink-300">
                 Precision Clicks
@@ -686,7 +667,7 @@ export function SettingsPanel({
             </div>
             <button
               onClick={() => onUpdateSettings({ zoomRefine: !settings.zoomRefine })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors flex-shrink-0 ${
                 settings.zoomRefine ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >
@@ -720,7 +701,7 @@ export function SettingsPanel({
           </div>
 
           {/* Bounding-box clicks - works standalone or as the pass-2 format */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div className="pr-4">
               <label className="block text-sm font-medium text-ink-300">
                 Click with Bounding Box
@@ -731,7 +712,7 @@ export function SettingsPanel({
             </div>
             <button
               onClick={() => onUpdateSettings({ boxRefine: !settings.boxRefine })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors flex-shrink-0 ${
                 settings.boxRefine ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >
@@ -744,7 +725,7 @@ export function SettingsPanel({
           </div>
 
           {/* Debug Mode */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div className="pr-4">
               <label className="block text-sm font-medium text-ink-300">
                 Debug Mode
@@ -755,7 +736,7 @@ export function SettingsPanel({
             </div>
             <button
               onClick={() => onUpdateSettings({ debugMode: !settings.debugMode })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors flex-shrink-0 ${
                 settings.debugMode ? 'bg-primary-500' : 'bg-ink-600'
               }`}
             >

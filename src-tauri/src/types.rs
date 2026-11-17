@@ -49,6 +49,9 @@ pub struct ActionArguments {
     pub direction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<i32>,
+    /// Wait only: seconds to wait.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub button: Option<String>,
     /// Plan only: short step strings and, when revising, why.
@@ -123,6 +126,8 @@ pub struct ActionResultArguments {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub steps: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -146,6 +151,7 @@ impl From<ToolCall> for ActionResult {
                 end_coordinate: tool_call.arguments.end_coordinate,
                 direction: tool_call.arguments.direction,
                 amount: tool_call.arguments.amount,
+                seconds: tool_call.arguments.seconds,
                 steps: tool_call.arguments.steps,
                 reason: tool_call.arguments.reason,
             },

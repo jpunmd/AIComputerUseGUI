@@ -12,7 +12,6 @@ const settings = {
   enablePlanning: false,
   zoomRefine: false,
   actionDelayMs: 0,
-  maxTurns: 8,
 };
 const reply = (
   action: string,
@@ -268,7 +267,7 @@ describe('agent controller safety', () => {
     await act(async () => {
       await result.current.runTask(
         'Open Chrome',
-        { ...settings, maxTurns: 30 },
+        settings,
         false,
       );
     });
@@ -443,7 +442,6 @@ describe('agent controller safety', () => {
         ...settings,
         enablePlanning: true,
         zoomRefine: true,
-        maxTurns: 2,
       });
     });
     await waitFor(() =>
@@ -490,10 +488,7 @@ describe('agent controller safety', () => {
     const { result } = renderHook(() => useAgent());
     let task!: Promise<void>;
     act(() => {
-      task = result.current.runTask('Open the selected item', {
-        ...settings,
-        maxTurns: 2,
-      });
+      task = result.current.runTask('Open the selected item', settings);
     });
     await waitFor(() =>
       expect(result.current.pendingConfirmation).not.toBeNull(),
@@ -750,7 +745,7 @@ describe('agent controller safety', () => {
     await act(async () => {
       await result.current.runTask(
         'Open report',
-        { ...settings, enablePlanning: true, maxTurns: 10 },
+        { ...settings, enablePlanning: true },
         false,
       );
     });
@@ -938,7 +933,7 @@ describe('agent controller safety', () => {
     );
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runTask('Test', { ...settings, maxTurns: 3 }, false);
+      await result.current.runTask('Test', settings, false);
     });
     expect(
       mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
@@ -1071,41 +1066,49 @@ describe('controller recovery and limits', () => {
     expect(result.current.task?.status).toBe('needs_user');
   });
 
-  it('counts only executed input toward Max actions', async () => {
+  it('has no action limit and lets the model wait repeatedly on an unchanged screen', async () => {
     responses = [
-      plan('Open report -> Report visible'),
-      reply('key', { key: 'enter' }),
+      // More actions than the old ceiling of 100 allowed.
+      ...Array.from({ length: 120 }, (_, i) =>
+        reply('key', { key: i % 2 ? 'tab' : 'down' }),
+      ),
+      reply('wait', { seconds: 30 }),
+      reply('wait', { seconds: 30 }),
+      reply('wait', { seconds: 30 }),
+      reply('wait', { seconds: 30 }),
+      reply('wait', { seconds: 30 }),
+      reply('done', { text: 'Download finished' }),
+      reply('done', { text: 'Download finished' }),
     ];
     const { result } = renderHook(() => useAgent());
     await act(async () => {
-      await result.current.runTask(
-        'Open report',
-        { ...settings, enablePlanning: true, maxTurns: 1 },
-        false,
-      );
+      await result.current.runTask('Download the file', settings, false);
     });
-    // The plan did not use up the single permitted action.
-    expect(calls('execute_action')).toHaveLength(1);
-    expect(hasMessage(result.current.messages, 'Reached the action limit (1)')).toBe(
-      true,
+    expect(result.current.task?.status).toBe('completed');
+    const executed = calls('execute_action');
+    expect(executed).toHaveLength(125);
+    const waits = calls('prepare_action').filter(
+      (c) => JSON.parse(c[1].action).action === 'wait',
     );
-    expect(result.current.task?.status).toBe('stopped');
+    expect(waits).toHaveLength(5);
+    expect(JSON.parse(waits[0][1].action).arguments.seconds).toBe(30);
   });
 
-  it('bounds model calls that never lead to input', async () => {
-    responses = Array.from({ length: 10 }, () => plan('Open report'));
+  it('pauses a model that keeps answering without acting', async () => {
+    responses = Array.from({ length: 20 }, () => plan('Open report'));
     const { result } = renderHook(() => useAgent());
     await act(async () => {
       await result.current.runTask(
         'Open report',
-        { ...settings, enablePlanning: true, maxTurns: 1 },
+        { ...settings, enablePlanning: true },
         false,
       );
     });
-    expect(calls('process_computer_use')).toHaveLength(7);
+    expect(calls('process_computer_use')).toHaveLength(12);
     expect(
-      hasMessage(result.current.messages, 'Reached the model-call limit (7)'),
+      hasMessage(result.current.messages, 'without taking an action'),
     ).toBe(true);
+    expect(result.current.task?.status).toBe('stopped');
   });
 
   // Hold the model request open until the run is stopped, like the backend,

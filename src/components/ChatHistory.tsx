@@ -58,7 +58,7 @@ export function describeAction(action: ActionResult, debugMode = false): string 
       label = a.key ? `Press ${a.key}` : 'Press a key';
       break;
     case 'wait':
-      label = 'Wait';
+      label = `Wait ${a.seconds ?? 2}s`;
       break;
     case 'screenshot':
       label = 'Take a screenshot';

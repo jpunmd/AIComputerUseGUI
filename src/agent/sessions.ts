@@ -69,6 +69,11 @@ function action(value: unknown): ActionResult {
       throw new Error('Invalid saved scroll amount');
     result.arguments.amount = args.amount;
   }
+  if (args.seconds !== undefined) {
+    if (typeof args.seconds !== 'number' || !Number.isFinite(args.seconds))
+      throw new Error('Invalid saved wait');
+    result.arguments.seconds = args.seconds;
+  }
   return result;
 }
 function message(value: unknown): SerializedMessage {

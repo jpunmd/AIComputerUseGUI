@@ -11,7 +11,6 @@ export const DEFAULT_SETTINGS: Settings = {
   extraInstructions: '', // Added to the built-in prompt (src/agent/protocol.ts)
   actionDelayMs: 1000, // Delay after action before next screenshot (ms)
   settleTimeoutMs: 2500, // Then wait up to this long for animations/loads to finish
-  maxTurns: 20, // Maximum number of executed actions before stopping
   maxRunMinutes: 20, // Wall-clock limit for one run
   screenshotMaxDimension: 1920, // Longest side sent to the model; 1920 = 1080p (a 4K screen downscales exactly 2:1)
   maxTokens: 8192, // Thinking counts toward this; too low truncates the reply before its action
@@ -110,7 +109,6 @@ export function sanitizeSettings(value: unknown): Settings {
     result.extraInstructions = migrateSystemPrompt(stored.systemPrompt);
   result.extraInstructions = result.extraInstructions.slice(0, MAX_EXTRA_INSTRUCTIONS);
   const bounded=(n:number,min:number,max:number,fallback:number)=>Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback;
-  result.maxTurns=Math.round(bounded(result.maxTurns,1,100,20));
   result.maxRunMinutes=Math.round(bounded(result.maxRunMinutes,1,240,20));
   result.actionDelayMs=bounded(result.actionDelayMs,0,10000,1000);
   result.settleTimeoutMs=Math.round(bounded(result.settleTimeoutMs,0,10000,2500));

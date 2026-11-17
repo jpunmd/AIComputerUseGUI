@@ -9,7 +9,7 @@ type ActionFields = (
     &'static [&'static str],
     &'static [&'static str],
 );
-const ACTION_FIELDS: [ActionFields; 9] = [
+const ACTION_FIELDS: [ActionFields; 10] = [
     (
         &["click", "left_click", "right_click", "double_click"],
         &["coordinate"],
@@ -23,7 +23,8 @@ const ACTION_FIELDS: [ActionFields; 9] = [
     (&["scroll"], &["coordinate", "direction"], &["amount"]),
     (&["type"], &["text"], &[]),
     (&["key"], &["key"], &[]),
-    (&["wait", "screenshot"], &[], &[]),
+    (&["wait"], &[], &["seconds"]),
+    (&["screenshot"], &[], &[]),
     (&["plan"], &["steps"], &["reason"]),
     (&["done", "confirm"], &["text"], &[]),
     (&["none"], &[], &["text"]),

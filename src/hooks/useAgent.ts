@@ -54,9 +54,14 @@ export const MAX_FORMAT_REPAIRS = 2;
 export const MAX_REJECTED_PROPOSALS = 2;
 // Characters of a rejected response replayed to the model for its repair.
 export const MAX_REJECTED_REPLAY = 600;
-// Model calls allowed per permitted action, plus a few for planning,
-// verification and repairs, so bookkeeping never ends a run early.
-export const modelCallLimit = (maxActions: number) => 2 * maxActions + 5;
+// Model calls in a row that end in no executed action (plans, repairs,
+// completion checks, rejected proposals). Runs have no action limit; this
+// only stops a model that keeps answering without ever acting. A wait counts
+// as an action, so waiting out a long load never trips it.
+export const MAX_CALLS_WITHOUT_ACTION = 12;
+// Actions that only pass time; repeating them on an unchanged screen is
+// waiting, not a loop.
+const PASSIVE_ACTIONS = ['wait', 'screenshot'];
 
 type StopReason = 'user' | 'emergency' | 'time_limit';
 
@@ -460,6 +465,7 @@ export function useAgent() {
       publishTask();
       message('user', query);
       let calls = 0,
+        callsSinceAction = 0,
         actions = 0,
         repeat = 0,
         previous = '',
@@ -477,17 +483,16 @@ export function useAgent() {
         : query;
       const minutes = Math.min(240, Math.max(1, settings.maxRunMinutes || 20));
       const timer = setTimeout(() => halt('time_limit'), minutes * 60 * 1000);
-      // Only executed input counts toward the action limit; planning,
-      // verification and repairs are bounded separately by the call limit.
-      const maxActions = Math.min(100, Math.max(1, settings.maxTurns || 20));
-      const maxCalls = modelCallLimit(maxActions);
       try {
         await start(supervised);
-        while (actions < maxActions && calls < maxCalls) {
+        // No action limit: the time limit, Stop and the emergency hotkey end
+        // a long run; the counters below end one that stops making progress.
+        while (callsSinceAction < MAX_CALLS_WITHOUT_ACTION) {
           assertRunning();
           setCurrentTurn(actions + 1);
           const shot = await capture(settings);
           calls++;
+          callsSinceAction++;
           const planning =
             memory.current.task?.status === 'planning' || requireReplan;
           const phasePrompt = requireReplan
@@ -609,11 +614,17 @@ export function useAgent() {
               'The user agreed to continue. Propose the next exact action; executor approval is still required in supervised mode.';
             continue;
           }
-          // The same action again on a screen the last one did not visibly change.
-          const key = actionKey(action);
+          // The same action again on a screen the last one did not visibly
+          // change. Waiting for a slow load is expected, so waits never count.
+          const passive = PASSIVE_ACTIONS.includes(action.action);
+          const key = passive ? '' : actionKey(action);
           repeat =
-            key === previous && isUnchanged(shot.screen_change) ? repeat + 1 : 1;
-          previous = key;
+            !passive && key === previous && isUnchanged(shot.screen_change)
+              ? repeat + 1
+              : passive
+                ? repeat
+                : 1;
+          if (!passive) previous = key;
           const recovery =
             repeat >= 3
               ? 'The same action and screen repeated without progress.'
@@ -700,6 +711,7 @@ export function useAgent() {
             throw err;
           }
           actions++;
+          callsSinceAction = 0;
           screenRetries = 0;
           completionRepair = 0;
           rejected = 0;
@@ -721,9 +733,7 @@ export function useAgent() {
           memory.current.task.status = 'stopped';
           message(
             'system',
-            actions >= maxActions
-              ? `Reached the action limit (${maxActions}). Completion was not verified.`
-              : `Reached the model-call limit (${maxCalls}) after ${actions} actions. Completion was not verified.`,
+            `The model answered ${MAX_CALLS_WITHOUT_ACTION} times in a row without taking an action (${actions} actions in total). Task paused; completion was not verified.`,
           );
         }
       } catch (err) {

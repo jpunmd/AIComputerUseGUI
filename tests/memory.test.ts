@@ -402,7 +402,7 @@ describe('task progress and durable memory', () => {
     });
     expect(settings).not.toHaveProperty('autoApproveConfirmations');
     expect(settings).not.toHaveProperty('simpleToolFormat');
-    expect(settings.maxTurns).toBe(100);
+    expect(settings).not.toHaveProperty('maxTurns');
     expect(settings.actionDelayMs).toBe(0);
     expect(settings.enablePlanning).toBe(true);
   });
