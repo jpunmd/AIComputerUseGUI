@@ -18,6 +18,8 @@
     "allow-save-api-key",
     "allow-delete-api-key",
     "allow-get-screen-size",
-    "allow-export-sessions"
+    "allow-export-sessions",
+    "allow-list-displays",
+    "allow-identify-displays"
   ]
 }

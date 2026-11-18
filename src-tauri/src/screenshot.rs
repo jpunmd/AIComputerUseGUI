@@ -1,3 +1,4 @@
+use crate::displays;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::codecs::png::PngEncoder;
 use image::{imageops::FilterType, ImageEncoder, RgbaImage};
@@ -27,6 +28,8 @@ const SETTLE_POLL: Duration = Duration::from_millis(150);
 pub enum ScreenshotError {
     #[error("No screens found")]
     NoScreens,
+    #[error("The selected display is not connected. Choose another display in Settings.")]
+    DisplayNotConnected,
     #[error("Failed to capture screenshot: {0}")]
     CaptureError(String),
     #[error("Failed to encode image: {0}")]
@@ -80,14 +83,14 @@ pub struct ScreenshotResult {
     pub geometry: ScreenGeometry,
 }
 
-/// A full-resolution capture of the primary monitor.
+/// A full-resolution capture of one display.
 struct NativeCapture {
     image: RgbaImage,
     geometry: ScreenGeometry,
 }
 
-fn capture_native() -> Result<NativeCapture, ScreenshotError> {
-    let screen = primary_monitor()?;
+fn capture_native(display: &str) -> Result<NativeCapture, ScreenshotError> {
+    let screen = displays::select(display)?;
     let geometry = geometry(&screen)?;
     let image = screen
         .capture_image()
@@ -130,16 +133,17 @@ pub fn changed_fraction(a: &[u8], b: &[u8]) -> f64 {
 /// frames match, the timeout passes, or the run is cancelled.
 pub fn wait_until_stable(
     timeout: Duration,
+    display: &str,
     cancel: &CancellationToken,
 ) -> Result<(), ScreenshotError> {
     if timeout.is_zero() {
         return Ok(());
     }
     let deadline = Instant::now() + timeout;
-    let mut previous = fingerprint(&capture_native()?.image);
+    let mut previous = fingerprint(&capture_native(display)?.image);
     while Instant::now() < deadline && !cancel.is_cancelled() {
         std::thread::sleep(SETTLE_POLL);
-        let next = fingerprint(&capture_native()?.image);
+        let next = fingerprint(&capture_native(display)?.image);
         if changed_fraction(&previous, &next) < STABLE_FRACTION {
             break;
         }
@@ -148,16 +152,18 @@ pub fn wait_until_stable(
     Ok(())
 }
 
-/// Capture a screenshot of the primary screen and return it with metadata
+/// Capture a screenshot of the chosen display (`display` is a device name, or
+/// empty for the primary display) and return it with metadata.
 /// max_dimension: Optional maximum dimension for resizing. If None, uses DEFAULT_MAX_SCREENSHOT_DIMENSION.
 pub fn capture_screen_with_metadata(
     max_dimension: Option<u32>,
+    display: &str,
 ) -> Result<ScreenshotResult, ScreenshotError> {
     let max_dim = checked_dimension(max_dimension.unwrap_or(DEFAULT_MAX_SCREENSHOT_DIMENSION))?;
     let NativeCapture {
         image: rgba_image,
         geometry,
-    } = capture_native()?;
+    } = capture_native(display)?;
     let actual_width = geometry.width;
     let actual_height = geometry.height;
 
@@ -303,14 +309,6 @@ pub struct ScreenGeometry {
     pub y: i32,
 }
 
-fn primary_monitor() -> Result<Monitor, ScreenshotError> {
-    Monitor::all()
-        .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?
-        .into_iter()
-        .find(|m| m.is_primary().unwrap_or(false))
-        .ok_or(ScreenshotError::NoScreens)
-}
-
 fn geometry(m: &Monitor) -> Result<ScreenGeometry, ScreenshotError> {
     let err = |e: xcap::XCapError| ScreenshotError::CaptureError(e.to_string());
     Ok(ScreenGeometry {
@@ -322,8 +320,15 @@ fn geometry(m: &Monitor) -> Result<ScreenGeometry, ScreenshotError> {
     })
 }
 
-pub fn get_screen_geometry() -> Result<ScreenGeometry, ScreenshotError> {
-    geometry(&primary_monitor()?)
+/// The geometry of the display with this id as it is now, or None once it is
+/// disconnected or its layout changed. Callers compare it with the geometry an
+/// observation was captured under, so stale input is never sent.
+pub fn geometry_of(id: u32) -> Option<ScreenGeometry> {
+    Monitor::all()
+        .ok()?
+        .iter()
+        .find(|m| m.id().ok() == Some(id))
+        .and_then(|m| geometry(m).ok())
 }
 
 fn checked_dimension(value: u32) -> Result<u32, ScreenshotError> {
@@ -387,7 +392,7 @@ mod tests {
     #[test]
     #[ignore = "Requires an interactive Windows desktop; captures only, never sends input"]
     fn capture_primary_monitor_smoke() {
-        let shot = capture_screen_with_metadata(Some(1280)).unwrap();
+        let shot = capture_screen_with_metadata(Some(1280), "").unwrap();
         let decoded =
             image::load_from_memory(&STANDARD.decode(shot.base64_image).unwrap()).unwrap();
         assert_eq!(
@@ -396,6 +401,6 @@ mod tests {
         );
         assert!(shot.image_width <= 1280 && shot.image_height <= 1280);
         assert!(shot.geometry.width > 0 && shot.geometry.height > 0);
-        assert_eq!(shot.geometry, get_screen_geometry().unwrap());
+        assert_eq!(Some(shot.geometry), geometry_of(shot.geometry.id));
     }
 }

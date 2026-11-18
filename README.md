@@ -46,7 +46,7 @@ npm run tauri dev
 Build for production with `npm run tauri build`.
 
 1. Start your local vision model server. In Settings, enter its API base URL (such as `http://localhost:8000/v1`). If the saved model is not one the server lists, the app switches to one it does; with several models, pick one from the list.
-2. Test the connection. Put the target application on the **primary monitor** and keep its controls visible beside this controller. When you start a run, focus returns to the application window you last used, so the first action can type into it.
+2. Test the connection. Choose the display the agent works on under **Display** in Settings (the primary display by default). **Identify displays** shows each display's number on its own screen, and the diagram in Settings uses the same numbers. Put the target application on that display and keep its controls visible beside this controller. When you start a run, focus returns to the application window you last used, so the first action can type into it.
 3. Enter a task with clear completion criteria. Planning is enabled by default. Select **Plan only** to inspect milestones before any input executes.
 4. With **Review each action** enabled, choose **Allow once** for one action or **Allow for this task** to let the remaining mouse/keyboard actions run automatically. The dialog previews the proposed click. An unanswered proposal expires after 60 seconds.
 5. Use **Continue task** to resume with a fresh screenshot and the original goal. Restoring a session never restores permission to execute.
@@ -99,7 +99,7 @@ Click the intended target before typing or pressing keys. If it changes or becom
 
 New defaults apply to fresh installs and to **Reset to Defaults** in Settings; previously saved settings keep their values.
 
-Coordinates use a 0–1000 grid mapped to the detected primary monitor, including its desktop offset.
+Coordinates use a 0–1000 grid mapped to the display chosen in Settings (the primary display by default), including its desktop offset. Pointer moves use absolute desktop pixels, so displays left of, above, or beyond the primary one work too.
 
 ### Screen resolution and 4K monitors
 

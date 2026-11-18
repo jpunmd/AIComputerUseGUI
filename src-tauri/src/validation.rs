@@ -96,7 +96,9 @@ pub fn validate(
         }
         "wait" => {
             if !(1..=MAX_WAIT_SECONDS).contains(&args.seconds.unwrap_or(DEFAULT_WAIT_SECONDS)) {
-                return Err(format!("Wait seconds must be between 1 and {MAX_WAIT_SECONDS}"));
+                return Err(format!(
+                    "Wait seconds must be between 1 and {MAX_WAIT_SECONDS}"
+                ));
             }
         }
         "screenshot" | "none" => {}

@@ -16,6 +16,8 @@ fn main() {
             "delete_api_key",
             "get_screen_size",
             "export_sessions",
+            "list_displays",
+            "identify_displays",
         ]),
     ))
     .expect("failed to build application permissions");

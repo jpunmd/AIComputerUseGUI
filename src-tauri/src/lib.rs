@@ -1,6 +1,7 @@
 mod actions;
 mod api;
 mod control_error;
+mod displays;
 mod protocol;
 mod providers;
 mod run_control;
@@ -56,17 +57,20 @@ async fn capture_screenshot_with_metadata(
     run_id: String,
     max_dimension: Option<u32>,
     settle_ms: Option<u32>,
+    display: Option<String>,
     state: Control<'_>,
 ) -> Result<ScreenshotWithMetadata, String> {
     let token = state.token(&run_id)?;
     let settle = Duration::from_millis(settle_ms.unwrap_or(0).min(10_000).into());
     let settle_token = token.clone();
+    // Empty means the primary display.
+    let display = display.unwrap_or_default();
     let (foreground, windows, result) = tauri::async_runtime::spawn_blocking(move || {
-        screenshot::wait_until_stable(settle, &settle_token)?;
+        screenshot::wait_until_stable(settle, &display, &settle_token)?;
         // Identify windows right before the frame the actions are checked against.
         let foreground = window_guard::foreground();
         let windows = window_guard::snapshot();
-        screenshot::capture_screen_with_metadata(max_dimension)
+        screenshot::capture_screen_with_metadata(max_dimension, &display)
             .map(|result| (foreground, windows, result))
     })
     .await
@@ -183,7 +187,7 @@ fn prepare_action(
     validation::validate(&action, 1000.0, false).map_err(ControlError::invalid_proposal)?;
     actions::validate_keys(&action).map_err(|e| ControlError::invalid_proposal(e.to_string()))?;
     let observation = state.observation(&run_id, &observation_id)?;
-    if screenshot::get_screen_geometry().map_err(|e| e.to_string())? != observation.geometry {
+    if screenshot::geometry_of(observation.geometry.id) != Some(observation.geometry) {
         return Err(ControlError::screen_changed(
             "Display changed; capture again",
         ));
@@ -250,8 +254,8 @@ async fn execute_action(
             .lock()
             .map_err(|_| "Input executor unavailable")?;
         let (proposal, token) = control.take(&run_id, &proposal_id)?;
-        if screenshot::get_screen_geometry().map_err(|e| e.to_string())?
-            != proposal.observation.geometry
+        if screenshot::geometry_of(proposal.observation.geometry.id)
+            != Some(proposal.observation.geometry)
         {
             return Err(ControlError::screen_changed(
                 "Display changed; capture again",
@@ -382,7 +386,9 @@ pub fn run() {
             api_key_status,
             save_api_key,
             delete_api_key,
-            export_sessions
+            export_sessions,
+            displays::list_displays,
+            displays::identify_displays
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

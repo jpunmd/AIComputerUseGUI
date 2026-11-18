@@ -6,6 +6,7 @@ export interface Settings {
   settleTimeoutMs: number; // Then wait up to this long for the screen to stop changing (0 = off)
   maxRunMinutes: number; // Wall-clock limit for one run
   screenshotMaxDimension: number; // Max width/height for screenshots sent to API
+  targetDisplay: string; // Display the agent works on: '' = primary display, otherwise its Windows device name (e.g. DISPLAY2 in \\.\DISPLAY2 form)
   maxTokens: number; // Output token limit per model reply (thinking included)
   enableThinking: boolean; // Enable thinking/reasoning mode for supported models
   expandThinkingByDefault: boolean; // Show thinking blocks expanded by default

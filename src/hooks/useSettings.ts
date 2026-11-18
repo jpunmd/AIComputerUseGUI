@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS: Settings = {
   settleTimeoutMs: 2500, // Then wait up to this long for animations/loads to finish
   maxRunMinutes: 20, // Wall-clock limit for one run
   screenshotMaxDimension: 1920, // Longest side sent to the model; 1920 = 1080p (a 4K screen downscales exactly 2:1)
+  targetDisplay: '', // Display the agent works on; '' = the primary display
   maxTokens: 8192, // Thinking counts toward this; too low truncates the reply before its action
   enableThinking: true, // Thinking mode on by default (Qwen3-VL thinking models)
   expandThinkingByDefault: true, // Show the model's reasoning expanded by default

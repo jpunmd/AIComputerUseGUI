@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Settings } from '../types';
 import { DEFAULT_SETTINGS, MAX_EXTRA_INSTRUCTIONS, pickModel } from '../hooks/useSettings';
 import { PROVIDERS, endpointOrigin, isLoopback, providerFor } from '../agent/providers';
+import { DisplayPicker } from './DisplayPicker';
 
 // Above this many models a plain dropdown is unusable; use a filterable field.
 const MODEL_DROPDOWN_LIMIT = 25;
@@ -15,6 +16,8 @@ interface SettingsPanelProps {
   onTestConnection: () => Promise<boolean>;
   isOpen: boolean;
   onClose: () => void;
+  /** A run is in progress (display choice and identify are held until it ends). */
+  runActive?: boolean;
 }
 
 export function SettingsPanel({
@@ -24,6 +27,7 @@ export function SettingsPanel({
   onTestConnection,
   isOpen,
   onClose,
+  runActive = false,
 }: SettingsPanelProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<boolean | null>(null);
@@ -630,6 +634,13 @@ export function SettingsPanel({
               Longest side of the screenshot sent to the model. Clicks map to the full screen at any setting. 1080p suits most displays; a 4K screen is downscaled exactly 2:1. Lower values use fewer tokens but lose detail.
             </p>
           </div>
+
+          {/* Display the agent works on */}
+          <DisplayPicker
+            value={settings.targetDisplay}
+            onChange={(name) => onUpdateSettings({ targetDisplay: name })}
+            runActive={runActive}
+          />
 
           {/* Save screenshots in sessions */}
           <div className="flex items-center justify-between gap-4">

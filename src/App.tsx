@@ -452,6 +452,7 @@ function App() {
         onTestConnection={handleTestConnection}
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        runActive={isProcessing}
       />
     </div>
   );

@@ -205,6 +205,7 @@ export function useAgent() {
           runId: assertRunning(),
           maxDimension: settings.screenshotMaxDimension,
           settleMs: settings.settleTimeoutMs,
+          display: settings.targetDisplay,
         },
       );
       assertRunning();

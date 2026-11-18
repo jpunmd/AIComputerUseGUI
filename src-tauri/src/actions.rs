@@ -5,7 +5,7 @@ use crate::{
     validation,
     window_guard::{self, WindowTarget},
 };
-use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use enigo::{Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use std::{thread, time::Duration};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -20,6 +20,30 @@ pub enum ActionError {
     TargetChanged(#[from] ControlError),
     #[error("Run stopped")]
     Cancelled,
+}
+
+/// Move the pointer to an absolute virtual-desktop pixel.
+///
+/// enigo's Windows absolute move scales to the primary display only, so a point
+/// on another display (left of, above, or beyond the primary) would land in the
+/// wrong place. SetCursorPos takes the same physical pixels xcap reports.
+#[cfg(windows)]
+fn move_pointer(_enigo: &mut Enigo, x: i32, y: i32) -> Result<(), ActionError> {
+    // SAFETY: SetCursorPos only takes two integers and reads no memory.
+    let moved = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y) };
+    if moved == 0 {
+        return Err(ActionError::ExecutionError(
+            "Could not move the pointer to the target".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn move_pointer(enigo: &mut Enigo, x: i32, y: i32) -> Result<(), ActionError> {
+    enigo
+        .move_mouse(x, y, enigo::Coordinate::Abs)
+        .map_err(|e| ActionError::ExecutionError(e.to_string()))
 }
 
 fn check(cancel: &CancellationToken) -> Result<(), ActionError> {
@@ -123,7 +147,7 @@ pub fn execute_action(
                     .ok_or_else(|| ActionError::InvalidAction("Missing coordinate".into()))?,
             );
             at_point(x, y)?;
-            enigo.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+            move_pointer(&mut enigo, x, y)?;
             wait(80, cancel)?;
             at_point(x, y)?;
             let button = if action.action == "right_click" {
@@ -155,9 +179,7 @@ pub fn execute_action(
             );
             at_point(sx, sy)?;
             window_guard::at_point(ex, ey)?;
-            enigo
-                .move_mouse(sx, sy, Coordinate::Abs)
-                .map_err(input_err)?;
+            move_pointer(&mut enigo, sx, sy)?;
             wait(50, cancel)?;
             at_point(sx, sy)?;
             enigo
@@ -166,9 +188,7 @@ pub fn execute_action(
             let result = (|| {
                 wait(50, cancel)?;
                 window_guard::at_point(ex, ey)?;
-                enigo
-                    .move_mouse(ex, ey, Coordinate::Abs)
-                    .map_err(input_err)?;
+                move_pointer(&mut enigo, ex, ey)?;
                 wait(50, cancel)
             })();
             let release = enigo
@@ -183,7 +203,7 @@ pub fn execute_action(
             })?;
             let (x, y) = point(p);
             at_point(x, y)?;
-            enigo.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+            move_pointer(&mut enigo, x, y)?;
             wait(80, cancel)?;
             at_point(x, y)?;
             let amount = action.arguments.amount.unwrap_or(5);
