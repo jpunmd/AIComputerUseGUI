@@ -851,6 +851,43 @@ describe('agent controller safety', () => {
     expect(result.current.task?.status).toBe('completed');
   });
 
+  it('asks for done instead of input once every plan step is finished', async () => {
+    responses = [
+      plan('Open report -> Report visible'),
+      reply('click', { coordinate: [100, 100] }),
+      // The last step is now visibly done, so this click has no step to serve.
+      reply(
+        'click',
+        { coordinate: [120, 120] },
+        { screen: 'Report visible', last_action: 'worked', step_done: true },
+      ),
+      reply(
+        'done',
+        { text: 'Report visible' },
+        { screen: 'Report visible', last_action: 'worked' },
+      ),
+      reply('done', { text: 'Report still visible' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Open report',
+        { ...settings, enablePlanning: true },
+        false,
+      );
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.task?.status).toBe('completed');
+    // Only the first click was sent; the refused one never reached the executor.
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
+    ).toHaveLength(1);
+    const repair = mocks.invoke.mock.calls.filter(
+      (c) => c[0] === 'process_computer_use',
+    )[3][1].query;
+    expect(repair).toContain('No plan step is left to work on');
+  });
+
   it('Stop during a model response cannot apply late completion evidence', async () => {
     responses = [plan('Open report')];
     let resolveReview!: (r: AgentResponse) => void;

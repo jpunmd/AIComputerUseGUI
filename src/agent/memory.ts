@@ -30,6 +30,10 @@ export const MAX_PROMPT_CHARS = 32000;
 export const NO_VISIBLE_CHANGE = 0.0002;
 export const NO_CHANGE_HINT =
   'Controller check: almost no pixels changed after that action. If you expected a visible result, it probably did not work.';
+// Shown once no plan step is left to work on. Input is refused then, so the
+// model must finish with done or revise the plan.
+export const NO_STEP_LEFT_HINT =
+  'No plan step is left to work on, so do not propose input. Use done with the answer and what on screen proves the whole task is complete, or send a new plan if more work is needed.';
 
 export const isUnchanged = (screenChange?: number | null) =>
   typeof screenChange === 'number' && screenChange < NO_VISIBLE_CHANGE;
@@ -163,7 +167,9 @@ export class TaskMemory {
       current
         ? 'Set step_done to true only if this screenshot shows: ' +
           current.successCriteria
-        : '',
+        : t.plan.length && t.status !== 'completed'
+          ? NO_STEP_LEFT_HINT
+          : '',
       failures.length ? 'Recent problems:\n' + failures.join('\n') : '',
       this.omitted
         ? 'Older transcript turns omitted: ' + this.omitted + '.'
