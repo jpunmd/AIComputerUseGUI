@@ -2,7 +2,15 @@
 
 ## Dependency baseline — 2026-11-16
 
-The updated npm lockfile reports **zero vulnerabilities**, including development dependencies. The updated Cargo lockfile reports **zero vulnerability entries** in `cargo audit`. No advisories are suppressed. Rerun audits when installing or updating dependencies.
+On 2026-11-16 the npm lockfile reported zero vulnerabilities, including development dependencies. As of 2026-11-17 it reports one development-tool advisory; see the next section. The Cargo lockfile reports **zero vulnerability entries** in `cargo audit`. No advisories are suppressed. Rerun audits when installing or updating dependencies.
+
+## JavaScript development-tool advisory — 2026-11-17
+
+`npm audit` reports 13 high-severity findings from one advisory, [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf): a ReDoS in `picomatch` (`<= 4.0.7`) through repeated extglob patterns. The findings reach `vite`, `vitest`, `tailwindcss`, `@vitejs/plugin-react` and their glob dependencies through `picomatch`.
+
+- These packages run only at build and test time. Their glob patterns come from this repository's own configuration, not from users, models, or input files, and the shipped app contains none of them.
+- No patched `picomatch` release exists yet (the advisory's `first_patched_version` is empty, and 4.0.7 is the newest release). Upgrading does not help: the latest `vite` and `vitest` still depend on `picomatch ^4.0.7`. Tailwind 4 would remove only the older `picomatch` path and would be a breaking migration.
+- `npm audit --omit=dev` reports zero vulnerabilities for the runtime dependencies that ship. The CI workflow therefore audits runtime dependencies only. Plain `npm audit` should run again once `picomatch` is fixed upstream, and this section should then be removed.
 
 This baseline includes patch updates for advisories published since September: rustls 0.23.46, rustls-webpki 0.103.17, tokio 1.54.1 and rustix 1.1.6 in Cargo, and vite, vitest, undici, postcss-selector-parser and source-map-js through `npm audit fix`. API-key storage added no dependencies; it uses the Windows credential API through the existing `windows-sys` crate.
 
