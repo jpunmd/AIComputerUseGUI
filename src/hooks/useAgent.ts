@@ -59,6 +59,14 @@ export const MAX_REJECTED_REPLAY = 600;
 // only stops a model that keeps answering without ever acting. A wait counts
 // as an action, so waiting out a long load never trips it.
 export const MAX_CALLS_WITHOUT_ACTION = 12;
+// Identical actions in a row on a screen that did not visibly change before the
+// controller asks for a new plan. Four attempts give a slow control one more
+// chance than before.
+export const MAX_REPEATED_NO_CHANGE = 4;
+// Plan revisions allowed while no milestone finishes. Finishing a milestone is
+// progress and restores the budget, so an earlier stall never pauses a task
+// that is still moving forward.
+export const MAX_REPLANS_WITHOUT_PROGRESS = 3;
 // Actions that only pass time; repeating them on an unchanged screen is
 // waiting, not a loop.
 const PASSIVE_ACTIONS = ['wait', 'screenshot'];
@@ -476,7 +484,8 @@ export function useAgent() {
         completionRepair = 0,
         screenRetries = 0,
         totalScreenRetries = 0,
-        replans = 0,
+        replansWithoutProgress = 0,
+        completedAtBudgetReset = 0,
         requireReplan = false;
       let next = resume
         ? query +
@@ -627,16 +636,24 @@ export function useAgent() {
                 : 1;
           if (!passive) previous = key;
           const recovery =
-            repeat >= 3
+            repeat >= MAX_REPEATED_NO_CHANGE
               ? 'The same action and screen repeated without progress.'
               : memory.current.recoveryReason();
           if (recovery) {
             memory.current.blocked(recovery);
             publishTask();
-            if (replans++ >= 1)
+            // Milestones finished since the last reset show progress, so the
+            // budget starts again.
+            const completed = memory.current.completedCount();
+            if (completed > completedAtBudgetReset) {
+              replansWithoutProgress = 0;
+              completedAtBudgetReset = completed;
+            }
+            if (replansWithoutProgress >= MAX_REPLANS_WITHOUT_PROGRESS)
               throw new Error(
-                'Repeated input still makes no progress after replanning. Task paused.',
+                `Repeated input still makes no progress after ${MAX_REPLANS_WITHOUT_PROGRESS} plan revisions. Task paused.`,
               );
+            replansWithoutProgress++;
             requireReplan = true;
             verifying = false;
             continue;

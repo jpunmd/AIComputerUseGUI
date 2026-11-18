@@ -719,7 +719,7 @@ describe('agent controller safety', () => {
     );
   });
 
-  it('replans once after repeated input and retains the failed approach in memory', async () => {
+  it('replans after repeated input and retains the failed approach in memory', async () => {
     const unchanged: StepReport = {
       screen: 'Screen unchanged',
       last_action: 'unclear',
@@ -727,6 +727,7 @@ describe('agent controller safety', () => {
     responses = [
       plan('Open report -> Report text visible'),
       reply('key', { key: 'enter' }),
+      reply('key', { key: 'enter' }, unchanged),
       reply('key', { key: 'enter' }, unchanged),
       reply('key', { key: 'enter' }, unchanged),
       reply('plan', {
@@ -762,14 +763,92 @@ describe('agent controller safety', () => {
         (n) => n.kind === 'failure' && n.text.includes('without progress'),
       ),
     ).toBe(true);
+    // Three enters run; the fourth identical attempt is blocked before input.
     expect(
       mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     const planRequest = mocks.invoke.mock.calls.filter(
       (c) => c[0] === 'process_computer_use',
-    )[4][1].query;
+    )[5][1].query;
     expect(planRequest).toContain('different approach');
     expect(planRequest).toContain('Finished steps are kept automatically');
+  });
+
+  it('pauses only after three plan revisions with no finished milestone', async () => {
+    const stall = () => [
+      reply('key', { key: 'enter' }),
+      reply('key', { key: 'enter' }, { screen: 'Same', last_action: 'unclear' }),
+      reply('key', { key: 'enter' }, { screen: 'Same', last_action: 'unclear' }),
+      reply('key', { key: 'enter' }, { screen: 'Same', last_action: 'unclear' }),
+    ];
+    responses = [
+      plan('Open report -> Report visible'),
+      ...stall(),
+      plan('Try the menu -> Report visible'),
+      ...stall(),
+      plan('Try the toolbar -> Report visible'),
+      ...stall(),
+      plan('Try the shortcut -> Report visible'),
+      ...stall(),
+    ];
+    const scripted = responses.length;
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Open report',
+        { ...settings, enablePlanning: true },
+        false,
+      );
+    });
+    // Three revisions were allowed; the fourth stall ends the run.
+    expect(result.current.error).toContain('after 3 plan revisions');
+    expect(result.current.task?.revision).toBe(4);
+    expect(
+      mocks.invoke.mock.calls.filter((c) => c[0] === 'process_computer_use'),
+    ).toHaveLength(scripted);
+  });
+
+  it('restores the revision budget after a milestone finishes', async () => {
+    const stall = () => [
+      reply('key', { key: 'enter' }),
+      reply('key', { key: 'enter' }, { screen: 'Same', last_action: 'unclear' }),
+      reply('key', { key: 'enter' }, { screen: 'Same', last_action: 'unclear' }),
+      reply('key', { key: 'enter' }, { screen: 'Same', last_action: 'unclear' }),
+    ];
+    responses = [
+      plan('Open report -> Report visible', 'Export report -> File saved'),
+      ...stall(),
+      plan('Try the menu -> Report visible', 'Export report -> File saved'),
+      ...stall(),
+      plan('Try the toolbar -> Report visible', 'Export report -> File saved'),
+      ...stall(),
+      plan('Try the shortcut -> Report visible', 'Export report -> File saved'),
+      // Still stuck after three revisions, but the report is now visible.
+      reply(
+        'click',
+        { coordinate: [100, 100] },
+        { screen: 'Report visible', last_action: 'worked', step_done: true },
+      ),
+      ...stall(),
+      plan('Export through the File menu -> File saved'),
+      reply('click', { coordinate: [200, 200] }),
+      reply(
+        'done',
+        { text: 'File saved' },
+        { screen: 'File saved', last_action: 'worked' },
+      ),
+      reply('done', { text: 'File still saved' }),
+    ];
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await result.current.runTask(
+        'Export report',
+        { ...settings, enablePlanning: true },
+        false,
+      );
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.task?.status).toBe('completed');
   });
 
   it('Stop during a model response cannot apply late completion evidence', async () => {
@@ -923,8 +1002,8 @@ describe('agent controller safety', () => {
     ).toEqual([]);
   });
 
-  it('stops unchanged action/screen repetition before a third execution', async () => {
-    responses = Array.from({ length: 3 }, (_, i) =>
+  it('stops unchanged action/screen repetition before a fourth execution', async () => {
+    responses = Array.from({ length: 4 }, (_, i) =>
       reply(
         'key',
         { key: 'enter' },
@@ -937,7 +1016,7 @@ describe('agent controller safety', () => {
     });
     expect(
       mocks.invoke.mock.calls.filter((c) => c[0] === 'execute_action'),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(result.current.task?.summary).toContain('without progress');
   });
 

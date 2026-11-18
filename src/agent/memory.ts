@@ -484,6 +484,11 @@ export class TaskMemory {
     );
   }
 
+  /** Milestones finished so far. A rise since the last budget reset counts as progress. */
+  completedCount(): number {
+    return this.task?.plan.filter((s) => s.status === 'completed').length ?? 0;
+  }
+
   recoveryReason(): string | null {
     if (!this.task) return null;
     const revisionStep =

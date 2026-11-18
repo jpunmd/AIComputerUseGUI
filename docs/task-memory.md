@@ -47,7 +47,7 @@ Reports cannot authorize input or replace the original user request. Input propo
 
 ## Bounded recovery and memory
 
-- The same action proposed three times in a row while the screen stays visibly unchanged (measured by the controller, so a blinking caret or the clock does not count), or two failed outcomes for the same milestone, request one revised plan before further input. A second such episode pauses the task. The wording of the report does not affect repeated-action detection.
+- The same action proposed four times in a row while the screen stays visibly unchanged (measured by the controller, so a blinking caret or the clock does not count), or two failed outcomes for the same milestone, request a revised plan before further input. Up to three revisions may pass with no milestone finished. Finishing a milestone restores that budget. A stall after three such revisions pauses the task. The wording of the report does not affect repeated-action detection.
 - When the controller measures almost no screen change after an input, the review request for that input says so, as a hint alongside the model's own judgment.
 - Up to seven milestones, 16 notes, 8,000 combined note/evidence characters, eight receipts, and five revision reasons are retained. Whole notes are compacted, oldest failures first. Omission counts are shown to the model.
 - The task prompt is capped at 32,000 JavaScript string characters and always contains the goal, the full plan, the review request for the previous input, and the current request. The separate recent transcript remains limited to six turns / 24,000 characters. These are character budgets, not model-specific token accounting.
